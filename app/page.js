@@ -300,6 +300,272 @@ export default function TikzApp() {
     ctx.restore();
   };
 
+  // Additional Shapes
+  const drawEllipse = (ctx, cx, cy, rx, ry) => {
+    ctx.beginPath();
+    ctx.ellipse(cx, cy, Math.abs(rx), Math.abs(ry), 0, 0, 2 * Math.PI);
+    ctx.stroke();
+    if (fillColor !== 'transparent') {
+      ctx.fillStyle = fillColor;
+      ctx.fill();
+    }
+  };
+
+  const drawParallelogram = (ctx, x, y, width, height) => {
+    ctx.beginPath();
+    const skew = width * 0.2;
+    ctx.moveTo(x + skew, y);
+    ctx.lineTo(x + width, y);
+    ctx.lineTo(x + width - skew, y + height);
+    ctx.lineTo(x, y + height);
+    ctx.closePath();
+    ctx.stroke();
+    if (fillColor !== 'transparent') {
+      ctx.fillStyle = fillColor;
+      ctx.fill();
+    }
+  };
+
+  const drawRhombus = (ctx, x, y, width, height) => {
+    ctx.beginPath();
+    const cx = x + width / 2;
+    const cy = y + height / 2;
+    ctx.moveTo(cx, y);
+    ctx.lineTo(x + width, cy);
+    ctx.lineTo(cx, y + height);
+    ctx.lineTo(x, cy);
+    ctx.closePath();
+    ctx.stroke();
+    if (fillColor !== 'transparent') {
+      ctx.fillStyle = fillColor;
+      ctx.fill();
+    }
+  };
+
+  const drawPentagon = (ctx, cx, cy, radius) => {
+    ctx.beginPath();
+    for (let i = 0; i < 5; i++) {
+      const angle = (i * 2 * Math.PI / 5) - Math.PI / 2;
+      const x = cx + radius * Math.cos(angle);
+      const y = cy + radius * Math.sin(angle);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.stroke();
+    if (fillColor !== 'transparent') {
+      ctx.fillStyle = fillColor;
+      ctx.fill();
+    }
+  };
+
+  const drawHexagon = (ctx, cx, cy, radius) => {
+    ctx.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const angle = (i * 2 * Math.PI / 6);
+      const x = cx + radius * Math.cos(angle);
+      const y = cy + radius * Math.sin(angle);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.stroke();
+    if (fillColor !== 'transparent') {
+      ctx.fillStyle = fillColor;
+      ctx.fill();
+    }
+  };
+
+  const drawStar = (ctx, cx, cy, outerRadius, innerRadius) => {
+    ctx.beginPath();
+    for (let i = 0; i < 10; i++) {
+      const radius = i % 2 === 0 ? outerRadius : innerRadius;
+      const angle = (i * Math.PI / 5) - Math.PI / 2;
+      const x = cx + radius * Math.cos(angle);
+      const y = cy + radius * Math.sin(angle);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.stroke();
+    if (fillColor !== 'transparent') {
+      ctx.fillStyle = fillColor;
+      ctx.fill();
+    }
+  };
+
+  // Additional Circuit Components
+  const drawBattery = (ctx, x1, y1, x2, y2) => {
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+    const angle = Math.atan2(dy, dx);
+
+    ctx.save();
+    ctx.translate(x1, y1);
+    ctx.rotate(angle);
+    ctx.beginPath();
+
+    ctx.moveTo(0, 0);
+    ctx.lineTo(distance * 0.4, 0);
+
+    // Long plate
+    ctx.moveTo(distance * 0.4, -15);
+    ctx.lineTo(distance * 0.4, 15);
+
+    // Short plate
+    ctx.moveTo(distance * 0.6, -8);
+    ctx.lineTo(distance * 0.6, 8);
+
+    ctx.moveTo(distance * 0.6, 0);
+    ctx.lineTo(distance, 0);
+
+    ctx.stroke();
+    ctx.restore();
+  };
+
+  const drawDiode = (ctx, x1, y1, x2, y2) => {
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+    const angle = Math.atan2(dy, dx);
+
+    ctx.save();
+    ctx.translate(x1, y1);
+    ctx.rotate(angle);
+    ctx.beginPath();
+
+    ctx.moveTo(0, 0);
+    ctx.lineTo(distance * 0.3, 0);
+
+    // Triangle
+    ctx.moveTo(distance * 0.3, -12);
+    ctx.lineTo(distance * 0.7, 0);
+    ctx.lineTo(distance * 0.3, 12);
+    ctx.closePath();
+    ctx.stroke();
+
+    // Line
+    ctx.beginPath();
+    ctx.moveTo(distance * 0.7, -12);
+    ctx.lineTo(distance * 0.7, 12);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(distance * 0.7, 0);
+    ctx.lineTo(distance, 0);
+    ctx.stroke();
+
+    ctx.restore();
+  };
+
+  const drawVoltmeter = (ctx, cx, cy, radius) => {
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, 0, 2 * Math.PI);
+    ctx.stroke();
+
+    ctx.font = 'bold 20px sans-serif';
+    ctx.fillStyle = strokeColor;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('V', cx, cy);
+  };
+
+  const drawAmmeter = (ctx, cx, cy, radius) => {
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, 0, 2 * Math.PI);
+    ctx.stroke();
+
+    ctx.font = 'bold 20px sans-serif';
+    ctx.fillStyle = strokeColor;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('A', cx, cy);
+  };
+
+  const drawGround = (ctx, x, y) => {
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x, y + 20);
+    ctx.moveTo(x - 15, y + 20);
+    ctx.lineTo(x + 15, y + 20);
+    ctx.moveTo(x - 10, y + 25);
+    ctx.lineTo(x + 10, y + 25);
+    ctx.moveTo(x - 5, y + 30);
+    ctx.lineTo(x + 5, y + 30);
+    ctx.stroke();
+  };
+
+  // Logic Gates
+  const drawAndGate = (ctx, x, y, width, height) => {
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + width * 0.5, y);
+    ctx.arc(x + width * 0.5, y + height / 2, height / 2, -Math.PI / 2, Math.PI / 2);
+    ctx.lineTo(x, y + height);
+    ctx.closePath();
+    ctx.stroke();
+    if (fillColor !== 'transparent') {
+      ctx.fillStyle = fillColor;
+      ctx.fill();
+    }
+  };
+
+  const drawOrGate = (ctx, x, y, width, height) => {
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.quadraticCurveTo(x + width * 0.6, y, x + width, y + height / 2);
+    ctx.quadraticCurveTo(x + width * 0.6, y + height, x, y + height);
+    ctx.quadraticCurveTo(x + width * 0.2, y + height / 2, x, y);
+    ctx.stroke();
+    if (fillColor !== 'transparent') {
+      ctx.fillStyle = fillColor;
+      ctx.fill();
+    }
+  };
+
+  const drawNotGate = (ctx, x, y, width, height) => {
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + width * 0.8, y + height / 2);
+    ctx.lineTo(x, y + height);
+    ctx.closePath();
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(x + width * 0.9, y + height / 2, width * 0.1, 0, 2 * Math.PI);
+    ctx.stroke();
+
+    if (fillColor !== 'transparent') {
+      ctx.fillStyle = fillColor;
+      ctx.fill();
+    }
+  };
+
+  const drawNandGate = (ctx, x, y, width, height) => {
+    drawAndGate(ctx, x, y, width * 0.85, height);
+    ctx.beginPath();
+    ctx.arc(x + width * 0.93, y + height / 2, width * 0.07, 0, 2 * Math.PI);
+    ctx.stroke();
+  };
+
+  const drawNorGate = (ctx, x, y, width, height) => {
+    drawOrGate(ctx, x, y, width * 0.85, height);
+    ctx.beginPath();
+    ctx.arc(x + width * 0.93, y + height / 2, width * 0.07, 0, 2 * Math.PI);
+    ctx.stroke();
+  };
+
+  const drawXorGate = (ctx, x, y, width, height) => {
+    // Extra arc on the left
+    ctx.beginPath();
+    ctx.moveTo(x - width * 0.1, y);
+    ctx.quadraticCurveTo(x + width * 0.1, y + height / 2, x - width * 0.1, y + height);
+    ctx.stroke();
+
+    drawOrGate(ctx, x, y, width, height);
+  };
+
   const handlePointerDown = (e) => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -398,6 +664,47 @@ export default function TikzApp() {
       drawInductor(ctx, startPos.x, startPos.y, x, y);
     } else if (tool === 'sine') {
       drawSineGraph(ctx, startPos.x, startPos.y, x, y);
+    } else if (tool === 'ellipse') {
+      const rx = Math.abs(x - startPos.x);
+      const ry = Math.abs(y - startPos.y);
+      drawEllipse(ctx, startPos.x, startPos.y, rx, ry);
+    } else if (tool === 'parallelogram') {
+      drawParallelogram(ctx, startPos.x, startPos.y, x - startPos.x, y - startPos.y);
+    } else if (tool === 'rhombus') {
+      drawRhombus(ctx, startPos.x, startPos.y, x - startPos.x, y - startPos.y);
+    } else if (tool === 'pentagon') {
+      const radius = Math.sqrt(Math.pow(startPos.x - x, 2) + Math.pow(startPos.y - y, 2));
+      drawPentagon(ctx, startPos.x, startPos.y, radius);
+    } else if (tool === 'hexagon') {
+      const radius = Math.sqrt(Math.pow(startPos.x - x, 2) + Math.pow(startPos.y - y, 2));
+      drawHexagon(ctx, startPos.x, startPos.y, radius);
+    } else if (tool === 'star') {
+      const radius = Math.sqrt(Math.pow(startPos.x - x, 2) + Math.pow(startPos.y - y, 2));
+      drawStar(ctx, startPos.x, startPos.y, radius, radius * 0.4);
+    } else if (tool === 'battery') {
+      drawBattery(ctx, startPos.x, startPos.y, x, y);
+    } else if (tool === 'diode') {
+      drawDiode(ctx, startPos.x, startPos.y, x, y);
+    } else if (tool === 'voltmeter') {
+      const radius = Math.sqrt(Math.pow(startPos.x - x, 2) + Math.pow(startPos.y - y, 2));
+      drawVoltmeter(ctx, startPos.x, startPos.y, radius);
+    } else if (tool === 'ammeter') {
+      const radius = Math.sqrt(Math.pow(startPos.x - x, 2) + Math.pow(startPos.y - y, 2));
+      drawAmmeter(ctx, startPos.x, startPos.y, radius);
+    } else if (tool === 'ground') {
+      drawGround(ctx, x, y);
+    } else if (tool === 'and-gate') {
+      drawAndGate(ctx, startPos.x, startPos.y, x - startPos.x, y - startPos.y);
+    } else if (tool === 'or-gate') {
+      drawOrGate(ctx, startPos.x, startPos.y, x - startPos.x, y - startPos.y);
+    } else if (tool === 'not-gate') {
+      drawNotGate(ctx, startPos.x, startPos.y, x - startPos.x, y - startPos.y);
+    } else if (tool === 'nand-gate') {
+      drawNandGate(ctx, startPos.x, startPos.y, x - startPos.x, y - startPos.y);
+    } else if (tool === 'nor-gate') {
+      drawNorGate(ctx, startPos.x, startPos.y, x - startPos.x, y - startPos.y);
+    } else if (tool === 'xor-gate') {
+      drawXorGate(ctx, startPos.x, startPos.y, x - startPos.x, y - startPos.y);
     }
   };
 
@@ -596,21 +903,59 @@ export default function TikzApp() {
 
             {/* Shapes */}
             <div>
-              <h5 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Shapes</h5>
+              <h5 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Basic Shapes</h5>
               <div className="grid grid-cols-2 gap-2">
-                <button onClick={() => setTool('rect')} className={`py-2 px-3 rounded-lg text-sm font-medium transition border ${tool === 'rect' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>⬜ Rectangle</button>
-                <button onClick={() => setTool('circle')} className={`py-2 px-3 rounded-lg text-sm font-medium transition border ${tool === 'circle' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>⭕ Circle</button>
-                <button onClick={() => setTool('triangle')} className={`py-2 px-3 rounded-lg text-sm font-medium transition border ${tool === 'triangle' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>🔺 Triangle</button>
+                <button onClick={() => setTool('rect')} className={`py-2 px-3 rounded-lg text-xs font-medium transition border ${tool === 'rect' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>⬜ Rectangle</button>
+                <button onClick={() => setTool('circle')} className={`py-2 px-3 rounded-lg text-xs font-medium transition border ${tool === 'circle' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>⭕ Circle</button>
+                <button onClick={() => setTool('triangle')} className={`py-2 px-3 rounded-lg text-xs font-medium transition border ${tool === 'triangle' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>🔺 Triangle</button>
+                <button onClick={() => setTool('ellipse')} className={`py-2 px-3 rounded-lg text-xs font-medium transition border ${tool === 'ellipse' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>⬭ Ellipse</button>
+              </div>
+            </div>
+
+            {/* Advanced Shapes */}
+            <div>
+              <h5 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Polygons</h5>
+              <div className="grid grid-cols-2 gap-2">
+                <button onClick={() => setTool('parallelogram')} className={`py-2 px-2 rounded-lg text-xs font-medium transition border ${tool === 'parallelogram' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>▱ Parallelogram</button>
+                <button onClick={() => setTool('rhombus')} className={`py-2 px-3 rounded-lg text-xs font-medium transition border ${tool === 'rhombus' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>◇ Rhombus</button>
+                <button onClick={() => setTool('pentagon')} className={`py-2 px-3 rounded-lg text-xs font-medium transition border ${tool === 'pentagon' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>⬠ Pentagon</button>
+                <button onClick={() => setTool('hexagon')} className={`py-2 px-3 rounded-lg text-xs font-medium transition border ${tool === 'hexagon' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>⬡ Hexagon</button>
+                <button onClick={() => setTool('star')} className={`py-2 px-3 rounded-lg text-xs font-medium transition border ${tool === 'star' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>⭐ Star</button>
               </div>
             </div>
 
             {/* Circuit Elements */}
             <div>
-              <h5 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Circuit Elements</h5>
-              <div className="flex flex-col gap-2">
-                <button onClick={() => setTool('resistor')} className={`py-2 px-3 rounded-lg text-sm font-medium transition border text-left ${tool === 'resistor' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>⚡ Resistor</button>
-                <button onClick={() => setTool('capacitor')} className={`py-2 px-3 rounded-lg text-sm font-medium transition border text-left ${tool === 'capacitor' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>🔋 Capacitor</button>
-                <button onClick={() => setTool('inductor')} className={`py-2 px-3 rounded-lg text-sm font-medium transition border text-left ${tool === 'inductor' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>🌀 Inductor</button>
+              <h5 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Circuit Components</h5>
+              <div className="grid grid-cols-2 gap-2">
+                <button onClick={() => setTool('resistor')} className={`py-2 px-3 rounded-lg text-xs font-medium transition border ${tool === 'resistor' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>⚡ Resistor</button>
+                <button onClick={() => setTool('capacitor')} className={`py-2 px-3 rounded-lg text-xs font-medium transition border ${tool === 'capacitor' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>🔋 Capacitor</button>
+                <button onClick={() => setTool('inductor')} className={`py-2 px-3 rounded-lg text-xs font-medium transition border ${tool === 'inductor' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>🌀 Inductor</button>
+                <button onClick={() => setTool('battery')} className={`py-2 px-3 rounded-lg text-xs font-medium transition border ${tool === 'battery' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>🔌 Battery</button>
+                <button onClick={() => setTool('diode')} className={`py-2 px-3 rounded-lg text-xs font-medium transition border ${tool === 'diode' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>🔺 Diode</button>
+                <button onClick={() => setTool('ground')} className={`py-2 px-3 rounded-lg text-xs font-medium transition border ${tool === 'ground' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>⏚ Ground</button>
+              </div>
+            </div>
+
+            {/* Measurement Tools */}
+            <div>
+              <h5 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Measurement</h5>
+              <div className="grid grid-cols-2 gap-2">
+                <button onClick={() => setTool('voltmeter')} className={`py-2 px-3 rounded-lg text-xs font-medium transition border ${tool === 'voltmeter' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>Ⓥ Voltmeter</button>
+                <button onClick={() => setTool('ammeter')} className={`py-2 px-3 rounded-lg text-xs font-medium transition border ${tool === 'ammeter' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>Ⓐ Ammeter</button>
+              </div>
+            </div>
+
+            {/* Logic Gates */}
+            <div>
+              <h5 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Logic Gates</h5>
+              <div className="grid grid-cols-2 gap-2">
+                <button onClick={() => setTool('and-gate')} className={`py-2 px-3 rounded-lg text-xs font-medium transition border ${tool === 'and-gate' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>AND</button>
+                <button onClick={() => setTool('or-gate')} className={`py-2 px-3 rounded-lg text-xs font-medium transition border ${tool === 'or-gate' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>OR</button>
+                <button onClick={() => setTool('not-gate')} className={`py-2 px-3 rounded-lg text-xs font-medium transition border ${tool === 'not-gate' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>NOT</button>
+                <button onClick={() => setTool('nand-gate')} className={`py-2 px-3 rounded-lg text-xs font-medium transition border ${tool === 'nand-gate' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>NAND</button>
+                <button onClick={() => setTool('nor-gate')} className={`py-2 px-3 rounded-lg text-xs font-medium transition border ${tool === 'nor-gate' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>NOR</button>
+                <button onClick={() => setTool('xor-gate')} className={`py-2 px-3 rounded-lg text-xs font-medium transition border ${tool === 'xor-gate' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>XOR</button>
               </div>
             </div>
 
