@@ -1,36 +1,128 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://github.com/vercel/next.js/tree/canary/packages/create-next-app).
+# TikZ Generator
+
+A professional web application for creating LaTeX TikZ and CircuiTikZ diagrams using AI. Draw diagrams on a canvas and instantly convert them to clean, compile-ready TikZ code powered by Claude AI.
+
+## Features
+
+- **Intuitive Drawing Canvas**: Freehand drawing with pen tool, shapes (rectangles, circles, triangles), and straight lines
+- **Circuit Elements**: Built-in resistor, capacitor, and inductor components for CircuiTikZ diagrams
+- **Mathematical Plots**: Sine wave generator with axis guidelines
+- **Style Controls**: 
+  - Adjustable line width and color
+  - Dashed line support
+  - Arrow heads for vectors
+  - Fill colors for shapes
+- **Apple Pencil Support**: Pressure-sensitive drawing on iPad with proper touch handling
+- **Advanced Features**:
+  - Undo/Redo with 30-level history
+  - Image import for tracing
+  - Session persistence (saves last generated code)
+  - Copy to clipboard
+  - Download as .tex file
+- **AI-Powered Code Generation**: Uses Claude Sonnet 4 to convert canvas drawings to elegant TikZ code
+- **Live Preview**: Real-time TikZ rendering with TikZJax
+
+## Tech Stack
+
+- **Framework**: Next.js 16 (App Router)
+- **AI Model**: Claude Sonnet 4 via Anthropic API
+- **Styling**: Tailwind CSS 4
+- **Rendering**: TikZJax for client-side LaTeX rendering
 
 ## Getting Started
 
-First, run the development server:
+### Prerequisites
 
+- Node.js 18+ 
+- An Anthropic API key ([get one here](https://console.anthropic.com/))
+
+### Installation
+
+1. Clone the repository:
 ```bash
-npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
+git clone <your-repo-url>
+cd tikz-generator
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+2. Install dependencies:
+```bash
+npm install
+```
 
-You can start editing the page by modifying `app/page.js`. The page auto-updates as you edit the file.
+3. Set up environment variables:
+```bash
+cp .env.example .env.local
+```
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+Edit `.env.local` and add your Anthropic API key:
+```
+ANTHROPIC_API_KEY=your_api_key_here
+```
 
-## Learn More
+4. Run the development server:
+```bash
+npm run dev
+```
 
-To learn more about Next.js, take a look at the following resources:
+5. Open [http://localhost:3000](http://localhost:3000) in your browser
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Usage
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+1. **Draw**: Use the tools in the left sidebar to draw your diagram on the canvas
+2. **Style**: Adjust colors, line width, and modifiers (dashed, arrows, fill)
+3. **Generate**: Click "Generate TikZ Code" to convert your drawing to LaTeX code
+4. **Preview**: View the rendered result in the Code tab
+5. **Export**: Copy to clipboard or download as a .tex file
 
-## Deploy on Vercel
+### Apple Pencil / iPad
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+The app fully supports Apple Pencil with:
+- Pressure sensitivity (thicker strokes with more pressure)
+- Palm rejection via pointer events
+- Optimized viewport for full-screen drawing
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Simply open the app in Safari on your iPad and start drawing with the Apple Pencil.
+
+## Production Deployment
+
+### Build
+
+```bash
+npm run build
+npm start
+```
+
+### Environment Variables
+
+Make sure to set `ANTHROPIC_API_KEY` or `CLAUDE_API_KEY` in your production environment.
+
+### Vercel Deployment
+
+This app is optimized for Vercel:
+
+```bash
+vercel --prod
+```
+
+Don't forget to add your `ANTHROPIC_API_KEY` in the Vercel project settings.
+
+## Architecture
+
+- `/app/page.js` - Main canvas component with drawing logic
+- `/app/api/generate-tikz/route.js` - API endpoint for Claude AI integration
+- `/app/layout.js` - Root layout with metadata and viewport configuration
+
+## Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+## License
+
+MIT
+
+## Acknowledgments
+
+- Built with [Claude AI](https://www.anthropic.com/claude) by Anthropic
+- TikZ rendering by [TikZJax](https://tikzjax.com/)
+- Inspired by [tikzmaker.com](https://tikzmaker.com/)
+
