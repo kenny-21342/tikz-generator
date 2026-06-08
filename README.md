@@ -57,6 +57,9 @@ cp .env.example .env.local
 Edit `.env.local` and add your Anthropic API key:
 ```
 ANTHROPIC_API_KEY=your_api_key_here
+
+# If using a third-party API provider, also add:
+ANTHROPIC_BASE_URL=https://your-third-party-api.com/v1
 ```
 
 4. Run the development server:

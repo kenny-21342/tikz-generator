@@ -3,6 +3,7 @@ import Anthropic from '@anthropic-ai/sdk';
 
 const anthropic = new Anthropic({
   apiKey: process.env.ANTHROPIC_API_KEY || process.env.CLAUDE_API_KEY,
+  baseURL: process.env.ANTHROPIC_BASE_URL || process.env.CLAUDE_BASE_URL,
 });
 
 export async function POST(request) {
