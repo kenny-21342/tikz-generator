@@ -31,6 +31,14 @@ export default function TikzApp() {
   const [isDrawing, setIsDrawing] = useState(false);
   const [startPos, setStartPos] = useState({ x: 0, y: 0 });
 
+  // Zoom, Pan & Grid State
+  const [zoom, setZoom] = useState(1);
+  const [showGrid, setShowGrid] = useState(false);
+  const [gridSize] = useState(20);
+
+  // Project Management
+  const [projectName, setProjectName] = useState('Untitled Diagram');
+
   // Load saved state from localStorage
   useEffect(() => {
     const saved = localStorage.getItem('tikz-last-code');
@@ -93,6 +101,142 @@ export default function TikzApp() {
     });
   };
 
+  // Zoom controls
+  const handleZoomIn = () => {
+    setZoom(prev => Math.min(prev * 1.2, 5)); // Max 500%
+  };
+
+  const handleZoomOut = () => {
+    setZoom(prev => Math.max(prev / 1.2, 0.1)); // Min 10%
+  };
+
+  const handleZoomReset = () => {
+    setZoom(1);
+  };
+
+  // Grid drawing function
+  const drawGrid = (ctx) => {
+    if (!showGrid) return;
+
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    ctx.save();
+    ctx.strokeStyle = '#e2e8f0';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([]);
+
+    const scaledGridSize = gridSize * zoom;
+
+    // Vertical lines
+    for (let x = 0; x < canvas.width; x += scaledGridSize) {
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, canvas.height);
+      ctx.stroke();
+    }
+
+    // Horizontal lines
+    for (let y = 0; y < canvas.height; y += scaledGridSize) {
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(canvas.width, y);
+      ctx.stroke();
+    }
+
+    ctx.restore();
+  };
+
+  // Save project to JSON
+  const saveProject = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+
+    const project = {
+      version: '2.0',
+      name: projectName,
+      created: Date.now(),
+      canvasWidth: canvas.width,
+      canvasHeight: canvas.height,
+      imageData: Array.from(imageData.data),
+      tikzCode: tikzCode,
+      settings: {
+        zoom,
+        showGrid,
+        strokeColor,
+        lineWidth,
+        fillColor,
+        isDashed,
+        hasArrow
+      }
+    };
+
+    const blob = new Blob([JSON.stringify(project)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${projectName.replace(/[^a-z0-9]/gi, '_')}.tikz.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  // Load project from JSON
+  const loadProject = (file) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const project = JSON.parse(e.target.result);
+
+        if (!project.version || project.version !== '2.0') {
+          setError('Unsupported project version');
+          return;
+        }
+
+        // Restore canvas
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+
+        canvas.width = project.canvasWidth;
+        canvas.height = project.canvasHeight;
+
+        const ctx = canvas.getContext('2d', { willReadFrequently: true });
+        const imageData = ctx.createImageData(canvas.width, canvas.height);
+        imageData.data.set(new Uint8ClampedArray(project.imageData));
+        ctx.putImageData(imageData, 0, 0);
+
+        // Restore state
+        setProjectName(project.name);
+        setTikzCode(project.tikzCode || '');
+        setZoom(project.settings.zoom || 1);
+        setShowGrid(project.settings.showGrid || false);
+        setStrokeColor(project.settings.strokeColor || '#000000');
+        setLineWidth(project.settings.lineWidth || 3);
+        setFillColor(project.settings.fillColor || 'transparent');
+        setIsDashed(project.settings.isDashed || false);
+        setHasArrow(project.settings.hasArrow || false);
+
+        // Save to history
+        saveHistoryState(ctx, canvas);
+
+      } catch (err) {
+        setError('Failed to load project: ' + err.message);
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const handleFileSelect = (e) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      loadProject(file);
+    }
+  };
+
   // Handle dynamic canvas resizing safely
   useEffect(() => {
     if (activeTab !== 'design') return;
@@ -119,14 +263,19 @@ export default function TikzApp() {
       // Apply initial styling parameters
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+      // Draw grid first
+      drawGrid(ctx);
+
       ctx.lineCap = 'round';
       ctx.lineJoin = 'round';
-      ctx.lineWidth = lineWidth;
+      ctx.lineWidth = lineWidth * zoom;
       ctx.strokeStyle = strokeColor;
       applyLineStyles(ctx);
 
       if (tempImage) {
         ctx.putImageData(tempImage, 0, 0);
+        drawGrid(ctx); // Redraw grid on top
       } else {
         saveHistoryState(ctx, canvas);
       }
@@ -139,7 +288,7 @@ export default function TikzApp() {
       clearTimeout(timer);
       window.removeEventListener('resize', resizeCanvas);
     };
-  }, [activeTab, lineWidth, strokeColor]);
+  }, [activeTab, lineWidth, strokeColor, zoom, showGrid]);
 
   // Actively sync context stroke configuration changes
   useEffect(() => {
@@ -147,10 +296,10 @@ export default function TikzApp() {
     if (canvas) {
       const ctx = canvas.getContext('2d', { willReadFrequently: true });
       ctx.strokeStyle = strokeColor;
-      ctx.lineWidth = lineWidth;
+      ctx.lineWidth = lineWidth * zoom;
       applyLineStyles(ctx);
     }
-  }, [strokeColor, isDashed, lineWidth]);
+  }, [strokeColor, isDashed, lineWidth, zoom]);
 
   const applyLineStyles = (ctx) => {
     if (isDashed) {
@@ -931,7 +1080,77 @@ export default function TikzApp() {
               </button>
             </div>
 
-            {/* __CONTINUE_HERE__ */}
+            {/* Zoom & Grid Controls */}
+            <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
+              <div className="flex items-center justify-between mb-3">
+                <h5 className="text-xs font-semibold text-slate-700">View Controls</h5>
+              </div>
+
+              {/* Zoom */}
+              <div className="mb-3">
+                <label className="text-xs text-slate-600 block mb-2">Zoom: {Math.round(zoom * 100)}%</label>
+                <div className="flex gap-2">
+                  <button
+                    onClick={handleZoomOut}
+                    className="flex-1 py-1.5 px-3 bg-white border border-slate-300 rounded-lg text-sm font-semibold hover:bg-slate-50 transition"
+                  >
+                    −
+                  </button>
+                  <button
+                    onClick={handleZoomReset}
+                    className="flex-1 py-1.5 px-3 bg-white border border-slate-300 rounded-lg text-sm font-semibold hover:bg-slate-50 transition"
+                  >
+                    100%
+                  </button>
+                  <button
+                    onClick={handleZoomIn}
+                    className="flex-1 py-1.5 px-3 bg-white border border-slate-300 rounded-lg text-sm font-semibold hover:bg-slate-50 transition"
+                  >
+                    +
+                  </button>
+                </div>
+              </div>
+
+              {/* Grid Toggle */}
+              <label className="flex items-center gap-2 text-sm cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={showGrid}
+                  onChange={(e) => setShowGrid(e.target.checked)}
+                  className="w-4 h-4"
+                />
+                <span className="text-slate-700">Show Grid ({gridSize}px)</span>
+              </label>
+            </div>
+
+            {/* Project Management */}
+            <div className="bg-blue-50 p-3 rounded-lg border border-blue-200">
+              <h5 className="text-xs font-semibold text-blue-800 mb-2">Project</h5>
+              <input
+                type="text"
+                value={projectName}
+                onChange={(e) => setProjectName(e.target.value)}
+                placeholder="Project name..."
+                className="w-full mb-2 px-3 py-2 border border-blue-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              />
+              <div className="flex gap-2">
+                <button
+                  onClick={saveProject}
+                  className="flex-1 py-2 px-3 bg-blue-500 text-white rounded-lg text-xs font-semibold hover:bg-blue-600 transition"
+                >
+                  💾 Save
+                </button>
+                <label className="flex-1 py-2 px-3 bg-white border border-blue-300 text-blue-700 rounded-lg text-xs font-semibold hover:bg-blue-50 transition text-center cursor-pointer">
+                  📂 Load
+                  <input
+                    type="file"
+                    accept=".json"
+                    onChange={handleFileSelect}
+                    className="hidden"
+                  />
+                </label>
+              </div>
+            </div>
 
             {/* Basic Drawing Tools */}
             <div>
