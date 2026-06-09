@@ -42,6 +42,57 @@ export default function TikzApp() {
     if (tikzCode) localStorage.setItem('tikz-last-code', tikzCode);
   }, [tikzCode]);
 
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      // Undo: Ctrl+Z or Cmd+Z
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        handleUndo();
+      }
+      // Redo: Ctrl+Y or Cmd+Shift+Z
+      if (((e.ctrlKey || e.metaKey) && e.key === 'y') || ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'z')) {
+        e.preventDefault();
+        handleRedo();
+      }
+      // Delete/Clear: Delete or Backspace (when not in text input)
+      if ((e.key === 'Delete' || e.key === 'Backspace') && e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA') {
+        e.preventDefault();
+        clearCanvas();
+      }
+      // Escape: Clear selection (future use)
+      if (e.key === 'Escape') {
+        e.preventDefault();
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [canUndo, canRedo]);
+
+  // Color presets
+  const colorPresets = [
+    '#000000', '#ffffff', '#ff0000', '#00ff00', '#0000ff',
+    '#ffff00', '#ff00ff', '#00ffff', '#ff8800', '#8800ff',
+    '#ff0088', '#00ff88', '#8888ff', '#888888', '#444444'
+  ];
+
+  const exportAsPNG = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    canvas.toBlob((blob) => {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'tikz-diagram.png';
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    });
+  };
+
   // Handle dynamic canvas resizing safely
   useEffect(() => {
     if (activeTab !== 'design') return;
@@ -1032,6 +1083,22 @@ export default function TikzApp() {
                     </button>
                   </div>
                 </div>
+
+                {/* Color Presets */}
+                <div>
+                  <label className="text-xs text-slate-600 block mb-2">Quick Colors</label>
+                  <div className="grid grid-cols-5 gap-1">
+                    {colorPresets.map((color, idx) => (
+                      <button
+                        key={idx}
+                        onClick={() => setStrokeColor(color)}
+                        className={`w-8 h-8 rounded border-2 transition ${strokeColor === color ? 'border-blue-500 scale-110' : 'border-slate-300 hover:scale-105'}`}
+                        style={{ backgroundColor: color }}
+                        title={color}
+                      />
+                    ))}
+                  </div>
+                </div>
               </div>
             </div>
 
@@ -1041,6 +1108,12 @@ export default function TikzApp() {
                 📥 Import Image
                 <input type="file" accept="image/*" onChange={handleImageUpload} className="hidden" />
               </label>
+              <button
+                onClick={exportAsPNG}
+                className="w-full py-2 px-4 bg-purple-50 text-purple-700 rounded-lg font-semibold text-sm hover:bg-purple-100 transition border border-purple-200"
+              >
+                🖼️ Export as PNG
+              </button>
               <button
                 onClick={clearCanvas}
                 className="w-full py-2 px-4 bg-red-50 text-red-600 rounded-lg font-semibold text-sm hover:bg-red-100 transition border border-red-200"
@@ -1087,6 +1160,28 @@ export default function TikzApp() {
               <p className="text-xs text-slate-600 leading-relaxed">
                 Draw diagrams on the canvas and generate LaTeX TikZ code using Claude AI. Perfect for academic papers, presentations, and circuit diagrams.
               </p>
+            </div>
+
+            <div className="bg-blue-50 p-4 rounded-lg border border-blue-200">
+              <h5 className="text-sm font-semibold text-blue-800 mb-2">⌨️ Keyboard Shortcuts</h5>
+              <div className="text-xs text-blue-700 space-y-1">
+                <div className="flex justify-between">
+                  <span className="font-mono">Ctrl/Cmd + Z</span>
+                  <span>Undo</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="font-mono">Ctrl/Cmd + Y</span>
+                  <span>Redo</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="font-mono">Delete</span>
+                  <span>Clear Canvas</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="font-mono">Escape</span>
+                  <span>Deselect</span>
+                </div>
+              </div>
             </div>
           </>
         )}
