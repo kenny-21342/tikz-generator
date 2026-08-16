@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
-import { checkAll, clientIp } from '@/lib/rateLimit';
+import { clientIp } from '@/lib/rateLimit';
+import { checkAiAttempt, checkAiRequest } from '@/lib/aiRateLimit';
 import {
   bodyExceedsLimit,
   MAX_BODY_BYTES,
@@ -29,28 +30,20 @@ const UPSTREAM_TIMEOUT_MS = 60_000;
  *   3. global daily ceiling  — bounds total spend even from many IPs
  * Plus a hard max_tokens cap so no single call can be arbitrarily expensive.
  *
- * All three counters are in-process (see lib/rateLimit.js): they do NOT survive
- * a cold start and are NOT shared between serverless instances. Treat them as a
- * speed bump, and set a real hard budget cap in the provider billing console.
- * Documented in README under "Rate limiting and spend caps".
+ * Request windows and the monthly attempt ceiling use the shared limiter in
+ * lib/aiRateLimit.js in production. Local development falls back to the
+ * dependency-free in-process limiter. Keep a matching hard dollar budget in the
+ * provider billing console as a second independent boundary.
  */
-const HOUR_MS = 60 * 60 * 1000;
-const DAY_MS = 24 * HOUR_MS;
-
-const readLimit = (name, fallback) => {
-  const parsed = Number.parseInt(process.env[name] ?? '', 10);
-  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
-};
-
-const PER_IP_HOURLY = readLimit('AI_RATE_LIMIT_PER_HOUR', 10);
-const PER_IP_DAILY = readLimit('AI_RATE_LIMIT_PER_DAY', 40);
-const GLOBAL_DAILY = readLimit('AI_GLOBAL_LIMIT_PER_DAY', 500);
-
 // Hard ceiling on tokens billed per call. The env override can only lower it,
 // never raise it above HARD_MAX_TOKENS — a misconfigured deploy must not be
 // able to turn one request into an unbounded one.
 const HARD_MAX_TOKENS = 8192;
-const MAX_TOKENS = Math.min(readLimit('AI_MAX_TOKENS', 4096), HARD_MAX_TOKENS);
+const parsedMaxTokens = Number.parseInt(process.env.AI_MAX_TOKENS ?? '', 10);
+const MAX_TOKENS = Math.min(
+  Number.isFinite(parsedMaxTokens) && parsedMaxTokens > 0 ? parsedMaxTokens : 4096,
+  HARD_MAX_TOKENS,
+);
 
 /* ---------------- Payload size caps ----------------
  * Enforced on the raw body before parsing, so an oversized request is rejected
@@ -121,7 +114,7 @@ function imageSystemPrompt() {
 // `retries` is a spend multiplier: each attempt is a separately billed upstream
 // call, so one client request could previously cost up to 6. Two retries (3 calls
 // max) still rides out a transient 5xx without tripling the worst-case bill.
-async function callGemini(systemPrompt, userContent, retries = 2) {
+async function callGemini(systemPrompt, userContent, retries = 2, beforeAttempt = null) {
   // userContent is either a string OR an array of content parts
   // (OpenAI multimodal format: [{type:'text',text:...},{type:'image_url',image_url:{url:...}}])
   const body = {
@@ -138,6 +131,16 @@ async function callGemini(systemPrompt, userContent, retries = 2) {
   let lastErr;
   for (let attempt = 0; attempt <= retries; attempt++) {
     try {
+      if (beforeAttempt) {
+        const spendGate = await beforeAttempt();
+        if (!spendGate.allowed) {
+          const error = new Error(spendGate.message);
+          error.name = 'SpendLimitError';
+          error.status = spendGate.status || 429;
+          error.retryAfter = spendGate.retryAfter;
+          throw error;
+        }
+      }
       const res = await fetch(`${GEMINI_BASE_URL}/chat/completions`, {
         method: 'POST',
         headers: {
@@ -192,27 +195,11 @@ export async function POST(request) {
 
     // --- Abuse control, before any parsing or upstream work ---
     const ip = clientIp(request);
-    const gate = checkAll([
-      {
-        key: `gen:ip:hour:${ip}`,
-        limit: PER_IP_HOURLY,
-        windowMs: HOUR_MS,
-        message: `Too many AI generations from this address (limit ${PER_IP_HOURLY} per hour). Drawing and local code generation still work — only image-to-TikZ is paused.`,
-      },
-      {
-        key: `gen:ip:day:${ip}`,
-        limit: PER_IP_DAILY,
-        windowMs: DAY_MS,
-        message: `Daily AI generation limit reached for this address (${PER_IP_DAILY} per day). Drawing and local code generation still work.`,
-      },
-      {
-        key: 'gen:global:day',
-        limit: GLOBAL_DAILY,
-        windowMs: DAY_MS,
-        message: 'This demo has hit its shared daily AI budget. Please try again tomorrow — drawing and local code generation are unaffected.',
-      },
-    ]);
+    const gate = await checkAiRequest(ip);
     if (!gate.allowed) {
+      if (gate.status && gate.status !== 429) {
+        return NextResponse.json({ error: gate.message }, { status: gate.status });
+      }
       return tooMany(`${gate.message} Try again in about ${describeWindow(gate.retryAfter)}.`, gate.retryAfter);
     }
 
@@ -292,7 +279,7 @@ export async function POST(request) {
       return NextResponse.json({ error: 'No elements, functions, or image data provided' }, { status: 400 });
     }
 
-    let generatedCode = await callGemini(systemPrompt, userContent);
+    let generatedCode = await callGemini(systemPrompt, userContent, 2, checkAiAttempt);
     // Strip a wrapping markdown fence only at the very start/end. The old global
     // replace deleted backtick runs anywhere in the payload, including inside code.
     generatedCode = generatedCode
@@ -306,6 +293,14 @@ export async function POST(request) {
     // Full detail to the server log; a short, non-leaky sentence to the browser.
     // Upstream messages can echo back the base URL, model name, or key state.
     console.error('Generation error:', error);
+
+    if (error.name === 'SpendLimitError') {
+      const status = error.status || 429;
+      return NextResponse.json(
+        { error: error.message },
+        { status, ...(error.retryAfter ? { headers: { 'Retry-After': String(error.retryAfter) } } : {}) },
+      );
+    }
 
     const upstream = typeof error.status === 'number' ? error.status : null;
     if (error.name === 'TimeoutError' || error.name === 'AbortError') {

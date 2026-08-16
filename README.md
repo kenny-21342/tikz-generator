@@ -115,14 +115,16 @@ AI generation also supports these optional spend controls:
 | --- | ---: | --- |
 | `AI_RATE_LIMIT_PER_HOUR` | `10` | AI calls allowed per source IP per hour |
 | `AI_RATE_LIMIT_PER_DAY` | `40` | AI calls allowed per source IP per day |
-| `AI_GLOBAL_LIMIT_PER_DAY` | `500` | AI calls allowed per server instance per day |
+| `AI_GLOBAL_LIMIT_PER_DAY` | `500` | AI calls allowed across the shared server per day |
 | `AI_MAX_TOKENS` | `4096` | Maximum output tokens per request (hard ceiling: `8192`) |
 
-These counters are in memory. On serverless hosts they reset on cold starts and
-are not shared between instances, so they are an abuse speed bump rather than a
-billing guarantee. Before deploying, configure a hard monthly budget and alerts
-in the AI provider's billing console. A durable cross-instance limit requires a
-shared atomic store such as Redis or Upstash.
+In production, these limits use the Upstash HTTP rate limiter. Configure
+`UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` (or Vercel KV's
+`KV_REST_API_URL` and `KV_REST_API_TOKEN`); the paid route fails closed if the
+shared limiter is missing or unavailable. Local development falls back to an
+in-memory limiter. `AI_MONTHLY_LIMIT` is a hard ceiling on paid upstream
+attempts, including retries. Set it from the provider's monthly dollar budget
+and keep a matching hard billing limit and alert in the provider console.
 
 Both API routes enforce input limits. Image generation accepts base64 image data
 URLs up to roughly 8 MB, element prompts are capped at 1 MB, and preview source
