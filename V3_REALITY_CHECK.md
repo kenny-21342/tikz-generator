@@ -1,5 +1,11 @@
 # TikZ Generator v3.0 - Selection System Implementation Guide
 
+## Decision (2026-08-16)
+
+Deferred until after the v2 production launch. Continue this work on a separate
+branch behind a feature flag so the current editor remains deployable throughout
+the refactor.
+
 ## Current Status
 
 I've started creating `app/page-v3-selection.js` with the foundation for:

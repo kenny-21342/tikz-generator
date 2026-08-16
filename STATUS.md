@@ -1,5 +1,12 @@
 # TikZ Generator - Current Status & Next Steps
 
+## Launch Decision (2026-08-16)
+
+Ship the current v2 editor before beginning the selection-system refactor. The
+v3 element model, selection tools, and properties panel are a post-launch
+milestone and must be developed on a separate branch behind a feature flag.
+They are not launch blockers.
+
 ## ✅ What's Currently Working (Production-Ready)
 
 ### Drawing Tools (30+)
