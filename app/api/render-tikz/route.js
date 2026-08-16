@@ -5,7 +5,10 @@ import { writeFile, readFile, mkdtemp, rm, access } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
 import { checkAll, clientIp } from '@/lib/rateLimit';
-import { validateRenderCode } from '@/lib/routeGuards';
+import {
+  renderBodyExceedsLimit,
+  validateRenderCode,
+} from '@/lib/routeGuards';
 
 const execFileAsync = promisify(execFile);
 
@@ -133,7 +136,17 @@ export async function POST(request) {
       );
     }
 
-    const body = await request.json().catch(() => ({}));
+    const raw = await request.text().catch(() => null);
+    if (raw === null) return errorPayload('Could not read the request body.', 400);
+    if (renderBodyExceedsLimit(raw)) {
+      return errorPayload('TikZ render request is too large.', 413);
+    }
+    let body;
+    try {
+      body = JSON.parse(raw);
+    } catch {
+      body = {};
+    }
     const { tikzCode } = body;
     const validation = validateRenderCode(tikzCode);
     if (!validation.ok) {

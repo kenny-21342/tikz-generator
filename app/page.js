@@ -461,6 +461,9 @@ const MAX_IMAGE_FILE_BYTES = 8 * 1024 * 1024;   // raw image file
 const MAX_AI_PAYLOAD_CHARS = 13 * 1024 * 1024;  // serialized body to /api/generate-tikz
 const MAX_TIKZ_CHARS = 200_000;                 // matches MAX_TIKZ_LENGTH server-side
 const MAX_PROJECT_FILE_BYTES = 25 * 1024 * 1024; // .tikz.json import
+const SUPPORTED_IMAGE_TYPES = new Set([
+  "image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp",
+]);
 
 const PROJECT_STORAGE_KEY = "tikz-autosave";
 const LAST_CODE_STORAGE_KEY = "tikz-last-code";
@@ -2079,7 +2082,10 @@ export default function TikzApp() {
   const onImagePick = (e) => {
     const file = e.target.files?.[0];
     if (!file) return;
-    if (!file.type.startsWith("image/")) { setError("Please choose an image file"); return; }
+    if (!SUPPORTED_IMAGE_TYPES.has(file.type.toLowerCase())) {
+      setError("Please choose a PNG, JPEG, GIF, WebP, or BMP image.");
+      return;
+    }
     if (file.size > MAX_IMAGE_FILE_BYTES) {
       setError(`Image must be under 8 MB — that file is ${(file.size / (1024 * 1024)).toFixed(1)} MB.`);
       return;
@@ -2917,10 +2923,10 @@ export default function TikzApp() {
         )}
       </div>
 
-      {error && !outputOpen && (
-        <div className="fixed bottom-4 right-4 z-50 bg-red-600 text-white px-4 py-2 rounded-lg shadow-lg text-sm">
+      {error && mode !== "graph" && (
+        <div role="alert" aria-live="assertive" className="fixed bottom-4 right-4 z-50 bg-red-600 text-white px-4 py-2 rounded-lg shadow-lg text-sm">
           {error}
-          <button className="ml-3 opacity-80 hover:opacity-100" onClick={() => setError(null)}>✕</button>
+          <button aria-label="Dismiss error" className="ml-3 opacity-80 hover:opacity-100" onClick={() => setError(null)}>✕</button>
         </div>
       )}
 

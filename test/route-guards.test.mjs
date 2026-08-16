@@ -5,8 +5,10 @@ import {
   MAX_BODY_BYTES,
   MAX_ELEMENTS,
   MAX_FUNCTIONS,
+  MAX_RENDER_BODY_BYTES,
   MAX_TIKZ_LENGTH,
   bodyExceedsLimit,
+  renderBodyExceedsLimit,
   validateGenerateBody,
   validateRenderCode,
 } from '../lib/routeGuards.js';
@@ -61,4 +63,9 @@ test('preview input rejects TeX file access, shell escapes, and preambles', () =
 
 test('preview input enforces its source cap', () => {
   assert.equal(validateRenderCode('x'.repeat(MAX_TIKZ_LENGTH + 1)).status, 413);
+});
+
+test('preview request envelope is bounded before JSON parsing', () => {
+  assert.equal(renderBodyExceedsLimit('{"tikzCode":"x"}'), false);
+  assert.equal(renderBodyExceedsLimit('x'.repeat(MAX_RENDER_BODY_BYTES + 1)), true);
 });
