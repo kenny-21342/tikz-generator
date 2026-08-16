@@ -1,4 +1,11 @@
 import { NextResponse } from 'next/server';
+import { checkAll, clientIp } from '@/lib/rateLimit';
+import {
+  bodyExceedsLimit,
+  MAX_BODY_BYTES,
+  MAX_ELEMENTS_CHARS,
+  validateGenerateBody,
+} from '@/lib/routeGuards';
 
 // This route speaks the OpenAI-compatible /chat/completions protocol. Google exposes
 // that at /v1beta/openai (the bare /v1beta root is the native generateContent API and
@@ -13,6 +20,57 @@ const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-3.5-flash';
 const GEMINI_KEY = process.env.GEMINI_AUTH_KEY || process.env.ANTHROPIC_API_KEY || process.env.GEMINI_API_KEY;
 
 const UPSTREAM_TIMEOUT_MS = 60_000;
+
+/* ---------------- Abuse / spend controls ----------------
+ * This route is the only thing on the server that costs money per call, so it
+ * is the one an anonymous visitor can use to run up a bill. Three layers:
+ *   1. per-IP hourly limit   — stops a runaway client or a casual scraper
+ *   2. per-IP daily limit    — stops slow-drip abuse that stays under the hour
+ *   3. global daily ceiling  — bounds total spend even from many IPs
+ * Plus a hard max_tokens cap so no single call can be arbitrarily expensive.
+ *
+ * All three counters are in-process (see lib/rateLimit.js): they do NOT survive
+ * a cold start and are NOT shared between serverless instances. Treat them as a
+ * speed bump, and set a real hard budget cap in the provider billing console.
+ * Documented in README under "Rate limiting and spend caps".
+ */
+const HOUR_MS = 60 * 60 * 1000;
+const DAY_MS = 24 * HOUR_MS;
+
+const readLimit = (name, fallback) => {
+  const parsed = Number.parseInt(process.env[name] ?? '', 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+};
+
+const PER_IP_HOURLY = readLimit('AI_RATE_LIMIT_PER_HOUR', 10);
+const PER_IP_DAILY = readLimit('AI_RATE_LIMIT_PER_DAY', 40);
+const GLOBAL_DAILY = readLimit('AI_GLOBAL_LIMIT_PER_DAY', 500);
+
+// Hard ceiling on tokens billed per call. The env override can only lower it,
+// never raise it above HARD_MAX_TOKENS — a misconfigured deploy must not be
+// able to turn one request into an unbounded one.
+const HARD_MAX_TOKENS = 8192;
+const MAX_TOKENS = Math.min(readLimit('AI_MAX_TOKENS', 4096), HARD_MAX_TOKENS);
+
+/* ---------------- Payload size caps ----------------
+ * Enforced on the raw body before parsing, so an oversized request is rejected
+ * without ever being buffered into an object graph or forwarded upstream.
+ */
+function tooMany(message, retryAfter) {
+  return NextResponse.json(
+    { error: message },
+    { status: 429, headers: { 'Retry-After': String(retryAfter) } },
+  );
+}
+
+function describeWindow(seconds) {
+  if (seconds >= 3600) {
+    const hours = Math.ceil(seconds / 3600);
+    return hours === 1 ? 'an hour' : `${hours} hours`;
+  }
+  const minutes = Math.max(1, Math.ceil(seconds / 60));
+  return minutes === 1 ? 'a minute' : `${minutes} minutes`;
+}
 
 function diagramSystemPrompt() {
   return (
@@ -60,7 +118,10 @@ function imageSystemPrompt() {
   );
 }
 
-async function callGemini(systemPrompt, userContent, retries = 5) {
+// `retries` is a spend multiplier: each attempt is a separately billed upstream
+// call, so one client request could previously cost up to 6. Two retries (3 calls
+// max) still rides out a transient 5xx without tripling the worst-case bill.
+async function callGemini(systemPrompt, userContent, retries = 2) {
   // userContent is either a string OR an array of content parts
   // (OpenAI multimodal format: [{type:'text',text:...},{type:'image_url',image_url:{url:...}}])
   const body = {
@@ -70,7 +131,8 @@ async function callGemini(systemPrompt, userContent, retries = 5) {
       { role: 'user', content: userContent },
     ],
     temperature: 0.2,
-    max_tokens: 8192,
+    // Never taken from the request — the client cannot widen its own spend.
+    max_tokens: MAX_TOKENS,
   };
 
   let lastErr;
@@ -119,9 +181,6 @@ async function callGemini(systemPrompt, userContent, retries = 5) {
   throw lastErr || new Error('Request failed');
 }
 
-// A [min, max] pair of finite numbers.
-const isRange = (v) => Array.isArray(v) && v.length === 2 && v.every((n) => typeof n === 'number' && Number.isFinite(n));
-
 export async function POST(request) {
   try {
     if (!GEMINI_KEY) {
@@ -131,34 +190,69 @@ export async function POST(request) {
       }, { status: 500 });
     }
 
-    const body = await request.json().catch(() => null);
-    if (!body || typeof body !== 'object') {
-      return NextResponse.json({ error: 'Invalid JSON body' }, { status: 400 });
+    // --- Abuse control, before any parsing or upstream work ---
+    const ip = clientIp(request);
+    const gate = checkAll([
+      {
+        key: `gen:ip:hour:${ip}`,
+        limit: PER_IP_HOURLY,
+        windowMs: HOUR_MS,
+        message: `Too many AI generations from this address (limit ${PER_IP_HOURLY} per hour). Drawing and local code generation still work — only image-to-TikZ is paused.`,
+      },
+      {
+        key: `gen:ip:day:${ip}`,
+        limit: PER_IP_DAILY,
+        windowMs: DAY_MS,
+        message: `Daily AI generation limit reached for this address (${PER_IP_DAILY} per day). Drawing and local code generation still work.`,
+      },
+      {
+        key: 'gen:global:day',
+        limit: GLOBAL_DAILY,
+        windowMs: DAY_MS,
+        message: 'This demo has hit its shared daily AI budget. Please try again tomorrow — drawing and local code generation are unaffected.',
+      },
+    ]);
+    if (!gate.allowed) {
+      return tooMany(`${gate.message} Try again in about ${describeWindow(gate.retryAfter)}.`, gate.retryAfter);
+    }
+
+    // --- Payload size cap, enforced on the raw bytes ---
+    const declaredLength = Number.parseInt(request.headers.get('content-length') ?? '', 10);
+    if (Number.isFinite(declaredLength) && declaredLength > MAX_BODY_BYTES) {
+      return NextResponse.json(
+        { error: 'That request is too large. Try a smaller image (under 8 MB) or a simpler drawing.' },
+        { status: 413 },
+      );
+    }
+    // Content-Length can be absent (chunked) or dishonest, so re-check the real size.
+    const raw = await request.text().catch(() => null);
+    if (raw === null) {
+      return NextResponse.json({ error: 'Could not read the request body.' }, { status: 400 });
+    }
+    if (bodyExceedsLimit(raw)) {
+      return NextResponse.json(
+        { error: 'That request is too large. Try a smaller image (under 8 MB) or a simpler drawing.' },
+        { status: 413 },
+      );
+    }
+
+    let body;
+    try {
+      body = JSON.parse(raw);
+    } catch {
+      body = null;
+    }
+    const validation = validateGenerateBody(body);
+    if (!validation.ok) {
+      return NextResponse.json({ error: validation.error }, { status: validation.status });
     }
     const { elements, projectName, image, mode, functions, xRange, yRange, graphConfig } = body;
-
-    if (!elements && !image && !functions) {
-      return NextResponse.json({ error: 'No elements, functions, or image data provided' }, { status: 400 });
-    }
-
-    const isGraph = mode === 'graph' || (!elements && !image && functions);
-
-    if (isGraph) {
-      if (!Array.isArray(functions) || functions.length === 0) {
-        return NextResponse.json({ error: '`functions` must be a non-empty array' }, { status: 400 });
-      }
-      if (!isRange(xRange) || !isRange(yRange)) {
-        return NextResponse.json({ error: '`xRange` and `yRange` must each be [min, max] numbers' }, { status: 400 });
-      }
-    }
+    const { isGraph } = validation;
     if (image && typeof image !== 'string') {
       return NextResponse.json({ error: '`image` must be a data URL string' }, { status: 400 });
     }
     // Mirror the client-side cap so a crafted request can't push an unbounded payload
     // upstream. Base64 inflates by ~4/3, so 8 MB of image is ~11 MB of data URL.
-    if (typeof image === 'string' && image.length > 12 * 1024 * 1024) {
-      return NextResponse.json({ error: 'Image is too large (max 8 MB).' }, { status: 413 });
-    }
     const hasImage = !!image;
     const systemPrompt = isGraph ? graphSystemPrompt() : (hasImage ? imageSystemPrompt() : diagramSystemPrompt());
 
@@ -185,6 +279,14 @@ export async function POST(request) {
       userContent = `Project: ${projectName || 'Function Plot'}\n\nAxis ranges: x in [${xRange[0]}, ${xRange[1]}], y in [${yRange[0]}, ${yRange[1]}]\n\nChart options:\n${cfgLines}\n\nFunctions:\n${fnList}\n\nGenerate clean pgfplots code. Configure the \\begin{axis}[...] options to honor ALL the chart options above. Include a \\legend{...} entry for each function.`;
     } else if (elements) {
       const elementsDescription = JSON.stringify(elements, null, 2);
+      // Guard the serialized size too: few elements can still carry huge point
+      // arrays, and prompt length is what actually drives the input token bill.
+      if (elementsDescription.length > MAX_ELEMENTS_CHARS) {
+        return NextResponse.json(
+          { error: 'This drawing is too detailed to convert (over 1 MB of shape data). Try simplifying it or converting a smaller selection.' },
+          { status: 413 },
+        );
+      }
       userContent = `Project: ${projectName || 'Diagram'}\n\nElements (JSON):\n${elementsDescription}\n\nConvert these elements to clean, elegant TikZ code. Scale coordinates appropriately and use proper LaTeX conventions.`;
     } else {
       return NextResponse.json({ error: 'No elements, functions, or image data provided' }, { status: 400 });
@@ -201,10 +303,38 @@ export async function POST(request) {
 
     return NextResponse.json({ tikzCode: generatedCode });
   } catch (error) {
+    // Full detail to the server log; a short, non-leaky sentence to the browser.
+    // Upstream messages can echo back the base URL, model name, or key state.
     console.error('Generation error:', error);
-    const status = error.name === 'TimeoutError' ? 504
-      : (typeof error.status === 'number' && error.status >= 400 && error.status < 600) ? error.status
-      : 500;
-    return NextResponse.json({ error: error.message || 'Failed to generate code' }, { status });
+
+    const upstream = typeof error.status === 'number' ? error.status : null;
+    if (error.name === 'TimeoutError' || error.name === 'AbortError') {
+      return NextResponse.json(
+        { error: 'The AI service took too long to respond. Please try again.' },
+        { status: 504 },
+      );
+    }
+    if (upstream === 401 || upstream === 403) {
+      return NextResponse.json(
+        { error: 'AI generation is misconfigured on this server. Please contact the site owner.' },
+        { status: 502 },
+      );
+    }
+    if (upstream === 429) {
+      return NextResponse.json(
+        { error: 'The AI service is rate-limiting this app right now. Please try again in a few minutes.' },
+        { status: 503, headers: { 'Retry-After': '120' } },
+      );
+    }
+    if (upstream && upstream >= 500) {
+      return NextResponse.json(
+        { error: 'The AI service is temporarily unavailable. Please try again shortly.' },
+        { status: 502 },
+      );
+    }
+    return NextResponse.json(
+      { error: 'Could not generate TikZ code from that input. Please try again.' },
+      { status: 500 },
+    );
   }
 }

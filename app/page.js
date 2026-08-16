@@ -452,6 +452,16 @@ const safeStringify = (value) => JSON.stringify(value, (key, val) => {
   return val;
 });
 
+// Client-side payload caps. These mirror the server limits in
+// app/api/generate-tikz/route.js and app/api/render-tikz/route.js so an
+// oversized request fails fast with a readable message instead of being
+// uploaded only to come back as a 413. The server still enforces its own
+// copies — these are for the user experience, not for security.
+const MAX_IMAGE_FILE_BYTES = 8 * 1024 * 1024;   // raw image file
+const MAX_AI_PAYLOAD_CHARS = 13 * 1024 * 1024;  // serialized body to /api/generate-tikz
+const MAX_TIKZ_CHARS = 200_000;                 // matches MAX_TIKZ_LENGTH server-side
+const MAX_PROJECT_FILE_BYTES = 25 * 1024 * 1024; // .tikz.json import
+
 const PROJECT_STORAGE_KEY = "tikz-autosave";
 const LAST_CODE_STORAGE_KEY = "tikz-last-code";
 const PROJECT_DATA_VERSION = 5;
@@ -2015,9 +2025,18 @@ export default function TikzApp() {
       // Image path still uses AI vision
       setLoading(true);
       try {
-        const res = await fetch("/api/generate-tikz", { method: "POST", headers: { "Content-Type": "application/json" }, body: safeStringify({ image: overrideImage, projectName }) });
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        const data = await res.json();
+        const payload = safeStringify({ image: overrideImage, projectName });
+        if (!payload) throw new Error("Could not prepare the image for upload.");
+        // Fail before the round-trip rather than letting the server 413 us.
+        if (payload.length > MAX_AI_PAYLOAD_CHARS) {
+          throw new Error("That image is too large to convert. Try one under 8 MB.");
+        }
+        const res = await fetch("/api/generate-tikz", { method: "POST", headers: { "Content-Type": "application/json" }, body: payload });
+        // The route explains rate limits and size caps in `error`; surface that
+        // text instead of flattening every failure to a bare status code.
+        const data = await res.json().catch(() => null);
+        if (!res.ok) throw new Error(data?.error || `The server rejected that request (HTTP ${res.status}).`);
+        if (!data) throw new Error("The server returned an unreadable response.");
         if (data.error) throw new Error(data.error);
         // Imported code is not derived from the canvas, so pin it until the user
         // edits the canvas again (see the regeneration effect below).
@@ -2061,9 +2080,13 @@ export default function TikzApp() {
     const file = e.target.files?.[0];
     if (!file) return;
     if (!file.type.startsWith("image/")) { setError("Please choose an image file"); return; }
-    if (file.size > 8 * 1024 * 1024) { setError("Image must be under 8 MB"); return; }
+    if (file.size > MAX_IMAGE_FILE_BYTES) {
+      setError(`Image must be under 8 MB — that file is ${(file.size / (1024 * 1024)).toFixed(1)} MB.`);
+      return;
+    }
     const reader = new FileReader();
     reader.onload = (ev) => setImagePreview(ev.target.result);
+    reader.onerror = () => setError("Could not read that image file. It may be corrupt or unreadable.");
     reader.readAsDataURL(file);
     e.target.value = ""; // allow re-picking same file
   };
@@ -2078,6 +2101,10 @@ export default function TikzApp() {
 
   const renderPreview = async () => {
     if (!tikzCode) { setError("No TikZ code to render."); return; }
+    if (tikzCode.length > MAX_TIKZ_CHARS) {
+      setError(`This diagram is too large to preview (over ${MAX_TIKZ_CHARS.toLocaleString()} characters of TikZ). You can still copy or download the code.`);
+      return;
+    }
     setRenderingPreview(true); setError(null); setPreviewProgress(0);
     setPreviewStatus("Preparing LaTeX document...");
     let progressTimer = null;
@@ -2132,17 +2159,29 @@ export default function TikzApp() {
     document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
   };
   const loadProject = (file) => {
+    if (file.size > MAX_PROJECT_FILE_BYTES) {
+      setError(`Project file is too large (max 25 MB) — that file is ${(file.size / (1024 * 1024)).toFixed(1)} MB.`);
+      return;
+    }
     const r = new FileReader();
     r.onload = (e) => {
-      const project = parseProjectJson(e.target.result);
-      if (!project) {
-        setError("Failed to load project: invalid or unsupported project JSON.");
-        return;
+      // parseProjectJson does its own try/catch, but restoring a structurally
+      // valid yet hostile project could still throw; keep the editor alive.
+      try {
+        const project = parseProjectJson(e.target.result);
+        if (!project) {
+          setError("Failed to load project: invalid or unsupported project JSON.");
+          return;
+        }
+        restoreViewport(project);
+        resyncCanvasSize();
+        setError(null);
+      } catch (err) {
+        console.error("Project load failed:", err);
+        setError("Failed to load project: the file could not be restored.");
       }
-      restoreViewport(project);
-      resyncCanvasSize();
-      setError(null);
     };
+    r.onerror = () => setError("Could not read that project file.");
     r.readAsText(file);
   };
   const onFilePick = (e) => {

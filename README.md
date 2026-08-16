@@ -109,6 +109,26 @@ Make sure to set `GEMINI_API_KEY` (or `GEMINI_AUTH_KEY` / `ANTHROPIC_API_KEY` fo
 proxies) in your production environment. The preview renderer requires a TeX
 distribution and a PDF→PNG converter on the server PATH.
 
+AI generation also supports these optional spend controls:
+
+| Variable | Default | Purpose |
+| --- | ---: | --- |
+| `AI_RATE_LIMIT_PER_HOUR` | `10` | AI calls allowed per source IP per hour |
+| `AI_RATE_LIMIT_PER_DAY` | `40` | AI calls allowed per source IP per day |
+| `AI_GLOBAL_LIMIT_PER_DAY` | `500` | AI calls allowed per server instance per day |
+| `AI_MAX_TOKENS` | `4096` | Maximum output tokens per request (hard ceiling: `8192`) |
+
+These counters are in memory. On serverless hosts they reset on cold starts and
+are not shared between instances, so they are an abuse speed bump rather than a
+billing guarantee. Before deploying, configure a hard monthly budget and alerts
+in the AI provider's billing console. A durable cross-instance limit requires a
+shared atomic store such as Redis or Upstash.
+
+Both API routes enforce input limits. Image generation accepts base64 image data
+URLs up to roughly 8 MB, element prompts are capped at 1 MB, and preview source
+is capped at 200,000 characters. The preview renderer rejects TeX file I/O,
+shell escapes, and user-supplied preamble commands.
+
 ### Vercel Deployment
 
 This app is optimized for Vercel:
@@ -124,6 +144,8 @@ Don't forget to add your `GEMINI_API_KEY` in the Vercel project settings.
 - `/app/page.js` - Main canvas component: drawing, editing, local deterministic TikZ generation, and graphing mode
 - `/app/api/generate-tikz/route.js` - API endpoint for AI image-to-TikZ conversion (OpenAI-compatible; Gemini or proxy)
 - `/app/api/render-tikz/route.js` - Compiles TikZ with pdflatex and converts the PDF to a PNG preview
+- `/lib/routeGuards.js` - Pure payload validation shared by the API routes and tests
+- `/lib/rateLimit.js` - In-process fixed-window request limiter
 - `/app/layout.js` - Root layout with metadata and viewport configuration
 
 ## Contributing

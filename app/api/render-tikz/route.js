@@ -4,13 +4,23 @@ import { promisify } from 'util';
 import { writeFile, readFile, mkdtemp, rm, access } from 'fs/promises';
 import { join } from 'path';
 import { tmpdir } from 'os';
+import { checkAll, clientIp } from '@/lib/rateLimit';
+import { validateRenderCode } from '@/lib/routeGuards';
 
 const execFileAsync = promisify(execFile);
+
+// pdflatex is not billed, but it is expensive: each render forks a process that
+// can burn a 30 s CPU timeout. Without a limit a single visitor can pin every
+// worker and take the app down, so this route needs throttling as much as the
+// AI route does. Same in-memory caveat applies (see lib/rateLimit.js).
+const MINUTE_MS = 60 * 1000;
+const HOUR_MS = 60 * MINUTE_MS;
+const RENDER_PER_MINUTE = 12;
+const RENDER_PER_HOUR = 120;
 
 const LATEX_TIMEOUT_MS = 30000;
 const CONVERT_TIMEOUT_MS = 15000;
 const MAX_OUTPUT_BUFFER = 5 * 1024 * 1024;
-const MAX_TIKZ_LENGTH = 200_000;
 // Only expose compiler output in development — it can echo back file paths and,
 // with a crafted document, file contents.
 const EXPOSE_TOOL_OUTPUT = process.env.NODE_ENV !== 'production';
@@ -18,24 +28,18 @@ const EXPOSE_TOOL_OUTPUT = process.env.NODE_ENV !== 'production';
 // TeX primitives that read or write files outside the job, or shell out. `pdflatex`
 // is already run without -shell-escape and with openin/openout restricted to the
 // temp dir, so this is defence in depth rather than the only barrier.
-const FORBIDDEN_TEX = [
-  /\\write\s*18/i,
-  /\\immediate\s*\\write\s*18/i,
-  /\\input\b/i,
-  /\\include\b/i,
-  /\\openin\b/i,
-  /\\openout\b/i,
-  /\\read\b/i,
-  /\\catcode/i,
-  /\\ShellEscape/i,
-  /\\directlua/i,
-  /\\usepackage\b/i,
-  /\\documentclass\b/i,
-];
+// pdflatex needs PATH/HOME/TEXMF* to find its distribution, but it has no
+// business inheriting API keys. Shell escape is already off and file I/O is
+// confined to the temp dir, so this is defence in depth: even if a future TeX
+// bug let a document read the environment, there would be no secret to read.
+const SECRET_ENV = /(KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH|SESSION|COOKIE|DSN|DATABASE_URL|CONNECTION_STRING)/i;
 
-function findForbidden(tikzCode) {
-  const hit = FORBIDDEN_TEX.find((re) => re.test(tikzCode));
-  return hit ? hit.source.replace(/\\\\/g, '\\').replace(/\\b|\\s\*|\[i\]/g, '') : null;
+function secretFreeEnv() {
+  const safe = {};
+  for (const [name, value] of Object.entries(process.env)) {
+    if (!SECRET_ENV.test(name)) safe[name] = value;
+  }
+  return safe;
 }
 
 function errorPayload(error, status = 500, extra = {}) {
@@ -107,18 +111,36 @@ function summarizeToolResult(name, result) {
 export async function POST(request) {
   let tempDir = null;
   try {
+    const ip = clientIp(request);
+    const gate = checkAll([
+      {
+        key: `render:ip:min:${ip}`,
+        limit: RENDER_PER_MINUTE,
+        windowMs: MINUTE_MS,
+        message: `Too many preview renders (limit ${RENDER_PER_MINUTE} per minute). Your code is unaffected — you can still copy or download it.`,
+      },
+      {
+        key: `render:ip:hour:${ip}`,
+        limit: RENDER_PER_HOUR,
+        windowMs: HOUR_MS,
+        message: `Hourly preview render limit reached (${RENDER_PER_HOUR} per hour). Your code is unaffected — you can still copy or download it.`,
+      },
+    ]);
+    if (!gate.allowed) {
+      return NextResponse.json(
+        { error: `${gate.message} Please wait about ${gate.retryAfter} seconds.` },
+        { status: 429, headers: { 'Retry-After': String(gate.retryAfter) } },
+      );
+    }
+
     const body = await request.json().catch(() => ({}));
     const { tikzCode } = body;
-    if (typeof tikzCode !== 'string' || !tikzCode.trim()) {
-      return errorPayload('No TikZ code provided.', 400);
-    }
-    if (tikzCode.length > MAX_TIKZ_LENGTH) {
-      return errorPayload(`TikZ code is too long (max ${MAX_TIKZ_LENGTH} characters).`, 413);
-    }
-    const forbidden = findForbidden(tikzCode);
-    if (forbidden) {
-      return errorPayload(`The renderer does not allow \\${forbidden.replace(/^\\/, '')} in TikZ code.`, 400, {
-        details: 'File I/O, shell escapes, and preamble commands are rejected. Put packages in your own document instead.',
+    const validation = validateRenderCode(tikzCode);
+    if (!validation.ok) {
+      return errorPayload(validation.error, validation.status, {
+        ...(validation.forbidden ? {
+          details: 'File I/O, shell escapes, and preamble commands are rejected. Put packages in your own document instead.',
+        } : {}),
       });
     }
 
@@ -148,7 +170,7 @@ ${tikzCode}
     // so \input{/etc/passwd} cannot exfiltrate server files into the rendered PNG.
     // TEXMFOUTPUT pins the writable directory to our temp dir.
     const latexEnv = {
-      ...process.env,
+      ...secretFreeEnv(),
       openin_any: 'p',
       openout_any: 'p',
       TEXMFOUTPUT: tempDir,
