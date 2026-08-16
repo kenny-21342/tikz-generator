@@ -532,7 +532,12 @@ const normalizePoint = (value) => {
   const x = toFiniteNumber(value.x);
   const y = toFiniteNumber(value.y);
   if (x === null || y === null) return null;
-  return { x, y };
+  const rawPressure = toFiniteNumber(value.pressure);
+  return {
+    x,
+    y,
+    ...(rawPressure === null ? {} : { pressure: Math.max(0.05, Math.min(1, rawPressure)) }),
+  };
 };
 
 function normalizeLoadedElement(value, index) {
@@ -931,6 +936,18 @@ function genElement(el, H) {
 
   // PEN STROKES → series of line segments
   if (t === "pen" && el.points && el.points.length > 1) {
+    const hasPressure = !el.isDashed && el.points.some((point) => Number.isFinite(point.pressure));
+    if (hasPressure) {
+      return el.points.slice(1).map((point, index) => {
+        const previous = el.points[index];
+        const pressure = ((previous.pressure ?? 0.5) + (point.pressure ?? 0.5)) / 2;
+        const segment = {
+          ...el,
+          lineWidth: (el.lineWidth || 2) * (0.5 + pressure),
+        };
+        return `  \\draw[${drawOpts(segment, H)}] (${sx(previous.x)},${sy(previous.y, H)}) -- (${sx(point.x)},${sy(point.y, H)});`;
+      }).join("\n");
+    }
     const opt = drawOpts(el, H);
     const pts = el.points.map((p) => `(${sx(p.x)},${sy(p.y, H)})`).join(" -- ");
     return `  \\draw[${opt}] ${pts};`;
@@ -1493,7 +1510,11 @@ export default function TikzApp() {
   const getCoords = (e) => {
     const cx = e.clientX ?? e.touches?.[0]?.clientX ?? 0;
     const cy = e.clientY ?? e.touches?.[0]?.clientY ?? 0;
-    return { ...screenToCanvas(cx, cy), pressure: e.pressure ?? 0.5 };
+    const rawPressure = Number.isFinite(e.pressure) ? e.pressure : 0.5;
+    return {
+      ...screenToCanvas(cx, cy),
+      pressure: e.pointerType === "pen" ? Math.max(0.05, Math.min(1, rawPressure)) : null,
+    };
   };
 
   const elementAt = (x, y) => {
@@ -1606,6 +1627,8 @@ export default function TikzApp() {
   /* ---------- Pointer handlers (diagram canvas) ---------- */
   // Eraser supports click *and* drag, so a stroke across several shapes removes them all.
   const erasingRef = useRef(false);
+  const activePenPointerRef = useRef(null);
+  const isPalmPointer = (e) => e.pointerType === "touch" && activePenPointerRef.current !== null;
   const eraseAt = (x, y) => {
     const id = elementAt(x, y);
     if (!id) return;
@@ -1615,6 +1638,8 @@ export default function TikzApp() {
   };
 
   const onPointerDown = (e) => {
+    if (e.pointerType === "pen") activePenPointerRef.current = e.pointerId;
+    else if (isPalmPointer(e)) { e.preventDefault(); return; }
     // Capture pointer so move/up events keep firing even outside the canvas
     // (essential for drag-to-rotate and drag-to-resize at edges).
     try { e.currentTarget.setPointerCapture(e.pointerId); } catch {}
@@ -1707,12 +1732,14 @@ export default function TikzApp() {
     setStartPos({ x, y });
     tempPointsRef.current = [];
     if (tool === "pen") {
-      tempPointsRef.current = [{ x, y }];
-      setCurrentShape({ type: "pen", points: [{ x, y }], strokeColor, lineWidth: lineWidth * (0.5 + pressure), isDashed });
+      const point = { x, y, ...(pressure === null ? {} : { pressure }) };
+      tempPointsRef.current = [point];
+      setCurrentShape({ type: "pen", points: [point], strokeColor, lineWidth, isDashed });
     }
   };
 
   const onPointerMove = (e) => {
+    if (isPalmPointer(e)) return;
     // Viewport panning takes priority over any tool.
     if (panStartRef.current) {
       const s = panStartRef.current;
@@ -1930,8 +1957,8 @@ export default function TikzApp() {
     if (!isDrawing) return;
 
     if (tool === "pen") {
-      tempPointsRef.current.push({ x, y });
-      setCurrentShape({ type: "pen", points: [...tempPointsRef.current], strokeColor, lineWidth: lineWidth * (0.5 + pressure), isDashed });
+      tempPointsRef.current.push({ x, y, ...(pressure === null ? {} : { pressure }) });
+      setCurrentShape({ type: "pen", points: [...tempPointsRef.current], strokeColor, lineWidth, isDashed });
       return;
     }
 
@@ -1975,6 +2002,10 @@ export default function TikzApp() {
   };
 
   const onPointerUp = (e) => {
+    if (isPalmPointer(e)) return;
+    if (e.pointerType === "pen" && activePenPointerRef.current === e.pointerId) {
+      activePenPointerRef.current = null;
+    }
     try { e.currentTarget.releasePointerCapture(e.pointerId); } catch {}
     if (panStartRef.current) { panStartRef.current = null; return; }
     if (erasingRef.current) {
@@ -2007,6 +2038,23 @@ export default function TikzApp() {
       setElements(next); saveToHistory(next); setSelectedId(finalEl.id);
     }
     setCurrentShape(null); tempPointsRef.current = [];
+  };
+
+  const onPointerCancel = (e) => {
+    if (isPalmPointer(e)) return;
+    if (e.pointerType === "pen" && activePenPointerRef.current === e.pointerId) {
+      activePenPointerRef.current = null;
+    }
+    try { e.currentTarget.releasePointerCapture(e.pointerId); } catch {}
+    panStartRef.current = null;
+    erasingRef.current = false;
+    resizeStartRef.current = null;
+    setResizeHandle(null);
+    setIsDragging(false);
+    setDragElementStart(null);
+    setIsDrawing(false);
+    setCurrentShape(null);
+    tempPointsRef.current = [];
   };
 
   /* ---------- AI generation & preview ---------- */
@@ -2739,6 +2787,7 @@ export default function TikzApp() {
                   onPointerDown={onPointerDown}
                   onPointerMove={onPointerMove}
                   onPointerUp={onPointerUp}
+                  onPointerCancel={onPointerCancel}
                   className={cx("touch-none w-full h-full", cursorClass)}
                 />
                 <div className="tm-status">
@@ -3127,9 +3176,23 @@ function drawElement(ctx, el) {
     }
     case "pen":
       if (el.points?.length > 0) {
-        ctx.beginPath(); ctx.moveTo(el.points[0].x, el.points[0].y);
-        el.points.forEach((p) => ctx.lineTo(p.x, p.y));
-        ctx.stroke();
+        const hasPressure = !el.isDashed && el.points.some((point) => Number.isFinite(point.pressure));
+        if (hasPressure && el.points.length > 1) {
+          for (let index = 1; index < el.points.length; index += 1) {
+            const previous = el.points[index - 1];
+            const point = el.points[index];
+            const pressure = ((previous.pressure ?? 0.5) + (point.pressure ?? 0.5)) / 2;
+            ctx.lineWidth = (el.lineWidth || 2) * (0.5 + pressure);
+            ctx.beginPath();
+            ctx.moveTo(previous.x, previous.y);
+            ctx.lineTo(point.x, point.y);
+            ctx.stroke();
+          }
+        } else {
+          ctx.beginPath(); ctx.moveTo(el.points[0].x, el.points[0].y);
+          el.points.forEach((p) => ctx.lineTo(p.x, p.y));
+          ctx.stroke();
+        }
       }
       break;
     case "text": {
