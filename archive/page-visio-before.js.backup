@@ -1,0 +1,2502 @@
+"use client";
+import { useRef, useState, useEffect } from 'react';
+
+export default function TikzApp() {
+  // Navigation & Primary System State
+  const [activeTab, setActiveTab] = useState('design');
+  const [tool, setTool] = useState('pen');
+  const [strokeColor, setStrokeColor] = useState('#000000');
+  const [lineWidth, setLineWidth] = useState(3);
+  const [textLabel, setTextLabel] = useState('Label');
+
+  // Style Modifiers
+  const [isDashed, setIsDashed] = useState(false);
+  const [hasArrow, setHasArrow] = useState(false);
+  const [fillColor, setFillColor] = useState('transparent');
+
+  // Core Pipeline State
+  const [tikzCode, setTikzCode] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [previewProgress, setPreviewProgress] = useState(0);
+  const [previewStatus, setPreviewStatus] = useState('');
+
+  // NEW: Element-based architecture
+  const [elements, setElements] = useState([]);
+  const elementIdCounter = useRef(0);
+  const [historyStack, setHistoryStack] = useState([[]]);
+  const [historyIndex, setHistoryIndex] = useState(0);
+  const [canUndo, setCanUndo] = useState(false);
+  const [canRedo, setCanRedo] = useState(false);
+
+  // Selection System
+  const [selectedId, setSelectedId] = useState(null);
+  const [showProperties, setShowProperties] = useState(false);
+  const [hoveredId, setHoveredId] = useState(null);
+
+  // Dragging System
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragStartPos, setDragStartPos] = useState({ x: 0, y: 0 });
+  const [dragElementStart, setDragElementStart] = useState(null);
+
+  // Canvas References
+  const canvasRef = useRef(null);
+  const containerRef = useRef(null);
+  const [isDrawing, setIsDrawing] = useState(false);
+  const [startPos, setStartPos] = useState({ x: 0, y: 0 });
+  const [currentShape, setCurrentShape] = useState(null);
+  const tempPointsRef = useRef([]);
+
+  // Zoom, Pan & Grid State
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [showGrid, setShowGrid] = useState(false);
+  const [gridSize] = useState(20);
+  const [snapToGrid, setSnapToGrid] = useState(false);
+
+  // Project Management
+  const [projectName, setProjectName] = useState('Untitled Diagram');
+
+  // Preview State
+  const [previewImage, setPreviewImage] = useState(null);
+  const [renderingPreview, setRenderingPreview] = useState(false);
+
+  // Graph Mode State
+  const [showGraphModal, setShowGraphModal] = useState(false);
+  const [graphConfig, setGraphConfig] = useState({
+    xMin: -5,
+    xMax: 5,
+    yMin: -5,
+    yMax: 5,
+    functions: ['sin(x)'],
+    xLabel: 'x',
+    yLabel: 'y',
+    title: '',
+    showGrid: true,
+    showTicks: true,
+    showLegend: false,
+    legendPosition: 'north east',
+    width: 300,
+    height: 200
+  });
+
+  // Load saved state from localStorage
+  useEffect(() => {
+    const saved = localStorage.getItem('tikz-last-code');
+    if (saved) setTikzCode(saved);
+
+    const savedProject = localStorage.getItem('tikz-autosave');
+    if (savedProject) {
+      try {
+        const data = JSON.parse(savedProject);
+        if (data.elements && confirm(`Recover autosaved project "${data.name}"?`)) {
+          setProjectName(data.name);
+          setElements(data.elements);
+          setZoom(data.zoom || 1);
+          setPan(data.pan || { x: 0, y: 0 });
+          setShowGrid(data.showGrid || false);
+        }
+      } catch (err) {}
+    }
+  }, []);
+
+  // Save code to localStorage whenever it changes
+  useEffect(() => {
+    if (tikzCode) localStorage.setItem('tikz-last-code', tikzCode);
+  }, [tikzCode]);
+
+  // Auto-save project every 30 seconds
+  useEffect(() => {
+    const timer = setInterval(() => {
+      const autosave = {
+        name: projectName,
+        elements,
+        zoom,
+        pan,
+        showGrid,
+        timestamp: Date.now()
+      };
+      localStorage.setItem('tikz-autosave', JSON.stringify(autosave));
+    }, 30000);
+
+    return () => clearInterval(timer);
+  }, [projectName, elements, zoom, pan, showGrid]);
+
+  // Update undo/redo button states
+  useEffect(() => {
+    setCanUndo(historyIndex > 0);
+    setCanRedo(historyIndex < historyStack.length - 1);
+  }, [historyIndex, historyStack]);
+
+  // Render canvas whenever elements, zoom, pan, or grid changes
+  useEffect(() => {
+    renderCanvas();
+  }, [elements, zoom, pan, showGrid, selectedId, hoveredId]);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'z' && !e.shiftKey) {
+        e.preventDefault();
+        handleUndo();
+      }
+      if (((e.ctrlKey || e.metaKey) && e.key === 'y') || ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'z')) {
+        e.preventDefault();
+        handleRedo();
+      }
+      if ((e.key === 'Delete' || e.key === 'Backspace') && e.target.tagName !== 'INPUT' && e.target.tagName !== 'TEXTAREA') {
+        e.preventDefault();
+        deleteSelectedElement();
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        setSelectedId(null);
+        setShowProperties(false);
+      }
+    };
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [canUndo, canRedo, selectedId]);
+
+  // Color presets
+  const colorPresets = [
+    '#000000', '#ffffff', '#ff0000', '#00ff00', '#0000ff',
+    '#ffff00', '#ff00ff', '#00ffff', '#ff8800', '#8800ff',
+    '#ff0088', '#00ff88', '#8888ff', '#888888', '#444444'
+  ];
+
+  // Generate unique element ID
+  const generateId = () => {
+    return `elem_${elementIdCounter.current++}`;
+  };
+
+  // Save to history
+  const saveToHistory = (newElements) => {
+    const newHistory = historyStack.slice(0, historyIndex + 1);
+    newHistory.push(newElements);
+    if (newHistory.length > 30) newHistory.shift();
+    else setHistoryIndex(historyIndex + 1);
+    setHistoryStack(newHistory);
+  };
+
+  // Undo/Redo handlers
+  const handleUndo = () => {
+    if (historyIndex > 0) {
+      const newIndex = historyIndex - 1;
+      setHistoryIndex(newIndex);
+      setElements(historyStack[newIndex]);
+      setSelectedId(null);
+      setShowProperties(false);
+    }
+  };
+
+  const handleRedo = () => {
+    if (historyIndex < historyStack.length - 1) {
+      const newIndex = historyIndex + 1;
+      setHistoryIndex(newIndex);
+      setElements(historyStack[newIndex]);
+      setSelectedId(null);
+      setShowProperties(false);
+    }
+  };
+
+  // Clear canvas
+  const clearCanvas = () => {
+    if (confirm('Clear all elements?')) {
+      const newElements = [];
+      setElements(newElements);
+      saveToHistory(newElements);
+      setSelectedId(null);
+      setShowProperties(false);
+    }
+  };
+
+  // Delete selected element
+  const deleteSelectedElement = () => {
+    if (selectedId) {
+      const newElements = elements.filter(el => el.id !== selectedId);
+      setElements(newElements);
+      saveToHistory(newElements);
+      setSelectedId(null);
+      setShowProperties(false);
+    }
+  };
+
+  // Duplicate selected element
+  const duplicateSelectedElement = () => {
+    if (selectedId) {
+      const elem = elements.find(e => e.id === selectedId);
+      if (elem) {
+        const newElem = {
+          ...elem,
+          id: generateId(),
+          x: elem.x + 20,
+          y: elem.y + 20,
+          created: Date.now(),
+          modified: Date.now()
+        };
+        const newElements = [...elements, newElem];
+        setElements(newElements);
+        saveToHistory(newElements);
+        setSelectedId(newElem.id);
+      }
+    }
+  };
+
+  // Update element property
+  const updateElementProperty = (id, property, value) => {
+    const newElements = elements.map(el =>
+      el.id === id ? { ...el, [property]: value, modified: Date.now() } : el
+    );
+    setElements(newElements);
+  };
+
+  // Commit property change to history (when user finishes editing)
+  const commitPropertyChange = () => {
+    saveToHistory(elements);
+  };
+
+  // Zoom controls
+  const handleZoomIn = () => setZoom(prev => Math.min(prev * 1.2, 5));
+  const handleZoomOut = () => setZoom(prev => Math.max(prev / 1.2, 0.1));
+  const handleZoomReset = () => setZoom(1);
+
+  // Snap to grid
+  const snapValue = (value) => {
+    if (!snapToGrid) return value;
+    return Math.round(value / gridSize) * gridSize;
+  };
+
+  // Coordinate transformation
+  const screenToCanvas = (screenX, screenY) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return { x: 0, y: 0 };
+    const rect = canvas.getBoundingClientRect();
+    return {
+      x: snapValue((screenX - rect.left - pan.x) / zoom),
+      y: snapValue((screenY - rect.top - pan.y) / zoom)
+    };
+  };
+
+  const getCoordinates = (e) => {
+    const clientX = e.clientX ?? e.touches?.[0]?.clientX ?? 0;
+    const clientY = e.clientY ?? e.touches?.[0]?.clientY ?? 0;
+    const coords = screenToCanvas(clientX, clientY);
+    return {
+      ...coords,
+      pressure: e.pressure ?? 0.5
+    };
+  };
+
+  // Hit detection - check if point is inside element
+  const isPointInElement = (x, y, element) => {
+    const tolerance = 5; // Click tolerance in pixels
+
+    switch (element.type) {
+      case 'rect':
+      case 'parallelogram':
+      case 'and-gate':
+      case 'or-gate':
+      case 'not-gate':
+      case 'nand-gate':
+      case 'nor-gate':
+      case 'xor-gate':
+        return x >= element.x - tolerance && x <= element.x + element.width + tolerance &&
+               y >= element.y - tolerance && y <= element.y + element.height + tolerance;
+
+      case 'circle':
+      case 'voltmeter':
+      case 'ammeter':
+        const dist = Math.sqrt((x - element.x) ** 2 + (y - element.y) ** 2);
+        return dist <= element.radius + tolerance;
+
+      case 'ellipse':
+        const dx = (x - element.x) / element.rx;
+        const dy = (y - element.y) / element.ry;
+        return Math.sqrt(dx * dx + dy * dy) <= 1 + tolerance / Math.max(element.rx, element.ry);
+
+      case 'triangle':
+        return x >= element.x - tolerance && x <= element.x + element.width + tolerance &&
+               y >= element.y - tolerance && y <= element.y + element.height + tolerance;
+
+      case 'rhombus':
+      case 'pentagon':
+      case 'hexagon':
+      case 'star':
+        const cx = element.x + (element.width || 0) / 2;
+        const cy = element.y + (element.height || 0) / 2;
+        const d = Math.sqrt((x - cx) ** 2 + (y - cy) ** 2);
+        return d <= (element.radius || Math.max(element.width, element.height) / 2) + tolerance;
+
+      case 'line':
+      case 'resistor':
+      case 'capacitor':
+      case 'inductor':
+      case 'battery':
+      case 'diode':
+        const lineDistX = element.x2 - element.x1;
+        const lineDistY = element.y2 - element.y1;
+        const lineLen = Math.sqrt(lineDistX ** 2 + lineDistY ** 2);
+        if (lineLen === 0) return Math.sqrt((x - element.x1) ** 2 + (y - element.y1) ** 2) <= tolerance;
+
+        const t = Math.max(0, Math.min(1, ((x - element.x1) * lineDistX + (y - element.y1) * lineDistY) / (lineLen ** 2)));
+        const projX = element.x1 + t * lineDistX;
+        const projY = element.y1 + t * lineDistY;
+        const distance = Math.sqrt((x - projX) ** 2 + (y - projY) ** 2);
+        return distance <= tolerance + (element.lineWidth || 3) / 2;
+
+      case 'pen':
+      case 'sine':
+        if (!element.points || element.points.length === 0) return false;
+        return element.points.some(pt => {
+          const d = Math.sqrt((x - pt.x) ** 2 + (y - pt.y) ** 2);
+          return d <= tolerance + (element.lineWidth || 3);
+        });
+
+      case 'text':
+        const textWidth = (element.text?.length || 1) * (element.fontSize || 18) * 0.6;
+        const textHeight = element.fontSize || 18;
+        return x >= element.x - tolerance && x <= element.x + textWidth + tolerance &&
+               y >= element.y - textHeight - tolerance && y <= element.y + tolerance;
+
+      case 'ground':
+        return x >= element.x - 20 && x <= element.x + 20 &&
+               y >= element.y - tolerance && y <= element.y + 35 + tolerance;
+
+      case 'graph':
+        return x >= element.x - tolerance && x <= element.x + element.width + tolerance &&
+               y >= element.y - tolerance && y <= element.y + element.height + tolerance;
+
+      default:
+        return false;
+    }
+  };
+
+  // Get element at point (returns topmost element)
+  const getElementAtPoint = (x, y) => {
+    for (let i = elements.length - 1; i >= 0; i--) {
+      if (isPointInElement(x, y, elements[i])) {
+        return elements[i].id;
+      }
+    }
+    return null;
+  };
+
+  // Get bounding box for element
+  const getElementBounds = (element) => {
+    const padding = 5;
+
+    switch (element.type) {
+      case 'rect':
+      case 'parallelogram':
+      case 'and-gate':
+      case 'or-gate':
+      case 'not-gate':
+      case 'nand-gate':
+      case 'nor-gate':
+      case 'xor-gate':
+        return {
+          x: element.x - padding,
+          y: element.y - padding,
+          width: element.width + 2 * padding,
+          height: element.height + 2 * padding
+        };
+
+      case 'circle':
+      case 'voltmeter':
+      case 'ammeter':
+        return {
+          x: element.x - element.radius - padding,
+          y: element.y - element.radius - padding,
+          width: element.radius * 2 + 2 * padding,
+          height: element.radius * 2 + 2 * padding
+        };
+
+      case 'ellipse':
+        return {
+          x: element.x - element.rx - padding,
+          y: element.y - element.ry - padding,
+          width: element.rx * 2 + 2 * padding,
+          height: element.ry * 2 + 2 * padding
+        };
+
+      case 'triangle':
+        return {
+          x: element.x - padding,
+          y: element.y - padding,
+          width: element.width + 2 * padding,
+          height: element.height + 2 * padding
+        };
+
+      case 'rhombus':
+      case 'pentagon':
+      case 'hexagon':
+      case 'star':
+        const r = element.radius || Math.max(element.width || 0, element.height || 0) / 2;
+        const cx = element.x + (element.width || 0) / 2;
+        const cy = element.y + (element.height || 0) / 2;
+        return {
+          x: cx - r - padding,
+          y: cy - r - padding,
+          width: r * 2 + 2 * padding,
+          height: r * 2 + 2 * padding
+        };
+
+      case 'line':
+      case 'resistor':
+      case 'capacitor':
+      case 'inductor':
+      case 'battery':
+      case 'diode':
+        const minX = Math.min(element.x1, element.x2);
+        const maxX = Math.max(element.x1, element.x2);
+        const minY = Math.min(element.y1, element.y2);
+        const maxY = Math.max(element.y1, element.y2);
+        return {
+          x: minX - padding - 20,
+          y: minY - padding - 20,
+          width: maxX - minX + 2 * padding + 40,
+          height: maxY - minY + 2 * padding + 40
+        };
+
+      case 'pen':
+      case 'sine':
+        if (!element.points || element.points.length === 0) {
+          return { x: element.x, y: element.y, width: 10, height: 10 };
+        }
+        const xs = element.points.map(p => p.x);
+        const ys = element.points.map(p => p.y);
+        return {
+          x: Math.min(...xs) - padding,
+          y: Math.min(...ys) - padding,
+          width: Math.max(...xs) - Math.min(...xs) + 2 * padding,
+          height: Math.max(...ys) - Math.min(...ys) + 2 * padding
+        };
+
+      case 'text':
+        const textW = (element.text?.length || 1) * (element.fontSize || 18) * 0.6;
+        const textH = element.fontSize || 18;
+        return {
+          x: element.x - padding,
+          y: element.y - textH - padding,
+          width: textW + 2 * padding,
+          height: textH + 2 * padding
+        };
+
+      case 'ground':
+        return {
+          x: element.x - 20 - padding,
+          y: element.y - padding,
+          width: 40 + 2 * padding,
+          height: 35 + 2 * padding
+        };
+
+      case 'graph':
+        return {
+          x: element.x - padding,
+          y: element.y - padding - 30,
+          width: element.width + 2 * padding,
+          height: element.height + 2 * padding + 50
+        };
+
+      default:
+        return { x: element.x, y: element.y, width: 50, height: 50 };
+    }
+  };
+
+  // Render single element
+  const renderElement = (ctx, element) => {
+    ctx.save();
+
+    // Apply element styles
+    ctx.strokeStyle = element.strokeColor || strokeColor;
+    ctx.lineWidth = (element.lineWidth || lineWidth);
+    ctx.fillStyle = element.fillColor || 'transparent';
+
+    if (element.isDashed) {
+      ctx.setLineDash([8, 8]);
+    } else {
+      ctx.setLineDash([]);
+    }
+
+    // Draw based on type
+    switch (element.type) {
+      case 'rect':
+        ctx.strokeRect(element.x, element.y, element.width, element.height);
+        if (element.fillColor && element.fillColor !== 'transparent') {
+          ctx.fillRect(element.x, element.y, element.width, element.height);
+        }
+        break;
+
+      case 'circle':
+        ctx.beginPath();
+        ctx.arc(element.x, element.y, element.radius, 0, 2 * Math.PI);
+        ctx.stroke();
+        if (element.fillColor && element.fillColor !== 'transparent') ctx.fill();
+        break;
+
+      case 'ellipse':
+        ctx.beginPath();
+        ctx.ellipse(element.x, element.y, element.rx, element.ry, 0, 0, 2 * Math.PI);
+        ctx.stroke();
+        if (element.fillColor && element.fillColor !== 'transparent') ctx.fill();
+        break;
+
+      case 'triangle':
+        ctx.beginPath();
+        ctx.moveTo(element.x + element.width / 2, element.y);
+        ctx.lineTo(element.x, element.y + element.height);
+        ctx.lineTo(element.x + element.width, element.y + element.height);
+        ctx.closePath();
+        ctx.stroke();
+        if (element.fillColor && element.fillColor !== 'transparent') ctx.fill();
+        break;
+
+      case 'line':
+        ctx.beginPath();
+        ctx.moveTo(element.x1, element.y1);
+        if (element.hasArrow) {
+          drawArrowhead(ctx, element.x1, element.y1, element.x2, element.y2, element.strokeColor);
+        } else {
+          ctx.lineTo(element.x2, element.y2);
+          ctx.stroke();
+        }
+        break;
+
+      case 'pen':
+        if (element.points && element.points.length > 0) {
+          ctx.beginPath();
+          ctx.moveTo(element.points[0].x, element.points[0].y);
+          element.points.forEach(pt => ctx.lineTo(pt.x, pt.y));
+          ctx.stroke();
+        }
+        break;
+
+      case 'text':
+        ctx.font = `${element.fontSize || 18}px sans-serif`;
+        ctx.fillStyle = element.strokeColor || strokeColor;
+        ctx.fillText(element.text || 'Label', element.x, element.y);
+        break;
+
+      case 'parallelogram':
+        const skew = element.width * 0.2;
+        ctx.beginPath();
+        ctx.moveTo(element.x + skew, element.y);
+        ctx.lineTo(element.x + element.width, element.y);
+        ctx.lineTo(element.x + element.width - skew, element.y + element.height);
+        ctx.lineTo(element.x, element.y + element.height);
+        ctx.closePath();
+        ctx.stroke();
+        if (element.fillColor && element.fillColor !== 'transparent') ctx.fill();
+        break;
+
+      case 'rhombus':
+        const cx = element.x + element.width / 2;
+        const cy = element.y + element.height / 2;
+        ctx.beginPath();
+        ctx.moveTo(cx, element.y);
+        ctx.lineTo(element.x + element.width, cy);
+        ctx.lineTo(cx, element.y + element.height);
+        ctx.lineTo(element.x, cy);
+        ctx.closePath();
+        ctx.stroke();
+        if (element.fillColor && element.fillColor !== 'transparent') ctx.fill();
+        break;
+
+      case 'pentagon':
+        drawPentagon(ctx, element.x, element.y, element.radius, element.fillColor);
+        break;
+
+      case 'hexagon':
+        drawHexagon(ctx, element.x, element.y, element.radius, element.fillColor);
+        break;
+
+      case 'star':
+        drawStar(ctx, element.x, element.y, element.outerRadius, element.innerRadius, element.fillColor);
+        break;
+
+      case 'resistor':
+        drawResistor(ctx, element.x1, element.y1, element.x2, element.y2);
+        break;
+
+      case 'capacitor':
+        drawCapacitor(ctx, element.x1, element.y1, element.x2, element.y2);
+        break;
+
+      case 'inductor':
+        drawInductor(ctx, element.x1, element.y1, element.x2, element.y2);
+        break;
+
+      case 'battery':
+        drawBattery(ctx, element.x1, element.y1, element.x2, element.y2);
+        break;
+
+      case 'diode':
+        drawDiode(ctx, element.x1, element.y1, element.x2, element.y2);
+        break;
+
+      case 'ground':
+        drawGround(ctx, element.x, element.y);
+        break;
+
+      case 'voltmeter':
+        drawVoltmeter(ctx, element.x, element.y, element.radius, element.strokeColor);
+        break;
+
+      case 'ammeter':
+        drawAmmeter(ctx, element.x, element.y, element.radius, element.strokeColor);
+        break;
+
+      case 'and-gate':
+        drawAndGate(ctx, element.x, element.y, element.width, element.height, element.fillColor);
+        break;
+
+      case 'or-gate':
+        drawOrGate(ctx, element.x, element.y, element.width, element.height, element.fillColor);
+        break;
+
+      case 'not-gate':
+        drawNotGate(ctx, element.x, element.y, element.width, element.height, element.fillColor);
+        break;
+
+      case 'nand-gate':
+        drawNandGate(ctx, element.x, element.y, element.width, element.height, element.fillColor);
+        break;
+
+      case 'nor-gate':
+        drawNorGate(ctx, element.x, element.y, element.width, element.height, element.fillColor);
+        break;
+
+      case 'xor-gate':
+        drawXorGate(ctx, element.x, element.y, element.width, element.height, element.fillColor);
+        break;
+
+      case 'sine':
+        drawSineGraph(ctx, element.x1, element.y1, element.x2, element.y2, element.strokeColor, element.lineWidth);
+        break;
+
+      case 'graph':
+        drawGraph(ctx, element);
+        break;
+    }
+
+    ctx.restore();
+  };
+
+  // Helper drawing functions
+  const drawArrowhead = (ctx, fromX, fromY, toX, toY, color) => {
+    const headLength = 16;
+    const angle = Math.atan2(toY - fromY, toX - fromX);
+    ctx.lineTo(toX, toY);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.setLineDash([]);
+    ctx.moveTo(toX, toY);
+    ctx.lineTo(toX - headLength * Math.cos(angle - Math.PI / 6), toY - headLength * Math.sin(angle - Math.PI / 6));
+    ctx.lineTo(toX - headLength * Math.cos(angle + Math.PI / 6), toY - headLength * Math.sin(angle + Math.PI / 6));
+    ctx.closePath();
+    ctx.fillStyle = color;
+    ctx.fill();
+  };
+
+  const drawResistor = (ctx, x1, y1, x2, y2) => {
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+    const angle = Math.atan2(dy, dx);
+
+    ctx.save();
+    ctx.translate(x1, y1);
+    ctx.rotate(angle);
+    ctx.beginPath();
+    ctx.moveTo(0, 0);
+    ctx.lineTo(distance * 0.25, 0);
+
+    const segments = 6;
+    const startX = distance * 0.25;
+    const endX = distance * 0.75;
+    const step = (endX - startX) / segments;
+    const amplitude = 18;
+
+    for (let i = 0; i < segments; i++) {
+      const currX = startX + step * i + step / 2;
+      const currY = i % 2 === 0 ? -amplitude : amplitude;
+      ctx.lineTo(currX, currY);
+    }
+
+    ctx.lineTo(endX, 0);
+    ctx.lineTo(distance, 0);
+    ctx.stroke();
+    ctx.restore();
+  };
+
+  const drawCapacitor = (ctx, x1, y1, x2, y2) => {
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+    const angle = Math.atan2(dy, dx);
+
+    ctx.save();
+    ctx.translate(x1, y1);
+    ctx.rotate(angle);
+    ctx.beginPath();
+
+    const plateHeight = 24;
+    const gap = 8;
+    const midpoint = distance / 2;
+
+    ctx.moveTo(0, 0);
+    ctx.lineTo(midpoint - gap / 2, 0);
+    ctx.moveTo(midpoint - gap / 2, -plateHeight / 2);
+    ctx.lineTo(midpoint - gap / 2, plateHeight / 2);
+    ctx.moveTo(midpoint + gap / 2, -plateHeight / 2);
+    ctx.lineTo(midpoint + gap / 2, plateHeight / 2);
+    ctx.moveTo(midpoint + gap / 2, 0);
+    ctx.lineTo(distance, 0);
+    ctx.stroke();
+    ctx.restore();
+  };
+
+  const drawInductor = (ctx, x1, y1, x2, y2) => {
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+    const angle = Math.atan2(dy, dx);
+
+    ctx.save();
+    ctx.translate(x1, y1);
+    ctx.rotate(angle);
+    ctx.beginPath();
+
+    const coils = 4;
+    const coilWidth = distance * 0.5 / coils;
+
+    ctx.moveTo(0, 0);
+    ctx.lineTo(distance * 0.25, 0);
+
+    const startX = distance * 0.25;
+    for (let i = 0; i < coils; i++) {
+      const x = startX + i * coilWidth;
+      ctx.arc(x + coilWidth / 2, 0, coilWidth / 2, Math.PI, 0, false);
+    }
+
+    ctx.lineTo(distance, 0);
+    ctx.stroke();
+    ctx.restore();
+  };
+
+  const drawBattery = (ctx, x1, y1, x2, y2) => {
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+    const angle = Math.atan2(dy, dx);
+
+    ctx.save();
+    ctx.translate(x1, y1);
+    ctx.rotate(angle);
+    ctx.beginPath();
+
+    ctx.moveTo(0, 0);
+    ctx.lineTo(distance * 0.4, 0);
+    ctx.moveTo(distance * 0.4, -15);
+    ctx.lineTo(distance * 0.4, 15);
+    ctx.moveTo(distance * 0.6, -8);
+    ctx.lineTo(distance * 0.6, 8);
+    ctx.moveTo(distance * 0.6, 0);
+    ctx.lineTo(distance, 0);
+
+    ctx.stroke();
+    ctx.restore();
+  };
+
+  const drawDiode = (ctx, x1, y1, x2, y2) => {
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const distance = Math.sqrt(dx * dx + dy * dy);
+    const angle = Math.atan2(dy, dx);
+
+    ctx.save();
+    ctx.translate(x1, y1);
+    ctx.rotate(angle);
+    ctx.beginPath();
+
+    ctx.moveTo(0, 0);
+    ctx.lineTo(distance * 0.3, 0);
+    ctx.moveTo(distance * 0.3, -12);
+    ctx.lineTo(distance * 0.7, 0);
+    ctx.lineTo(distance * 0.3, 12);
+    ctx.closePath();
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(distance * 0.7, -12);
+    ctx.lineTo(distance * 0.7, 12);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.moveTo(distance * 0.7, 0);
+    ctx.lineTo(distance, 0);
+    ctx.stroke();
+
+    ctx.restore();
+  };
+
+  const drawGround = (ctx, x, y) => {
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x, y + 20);
+    ctx.moveTo(x - 15, y + 20);
+    ctx.lineTo(x + 15, y + 20);
+    ctx.moveTo(x - 10, y + 25);
+    ctx.lineTo(x + 10, y + 25);
+    ctx.moveTo(x - 5, y + 30);
+    ctx.lineTo(x + 5, y + 30);
+    ctx.stroke();
+  };
+
+  const drawVoltmeter = (ctx, cx, cy, radius, color) => {
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, 0, 2 * Math.PI);
+    ctx.stroke();
+    ctx.font = 'bold 20px sans-serif';
+    ctx.fillStyle = color;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('V', cx, cy);
+  };
+
+  const drawAmmeter = (ctx, cx, cy, radius, color) => {
+    ctx.beginPath();
+    ctx.arc(cx, cy, radius, 0, 2 * Math.PI);
+    ctx.stroke();
+    ctx.font = 'bold 20px sans-serif';
+    ctx.fillStyle = color;
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText('A', cx, cy);
+  };
+
+  const drawPentagon = (ctx, cx, cy, radius, fill) => {
+    ctx.beginPath();
+    for (let i = 0; i < 5; i++) {
+      const angle = (i * 2 * Math.PI / 5) - Math.PI / 2;
+      const x = cx + radius * Math.cos(angle);
+      const y = cy + radius * Math.sin(angle);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.stroke();
+    if (fill && fill !== 'transparent') {
+      ctx.fillStyle = fill;
+      ctx.fill();
+    }
+  };
+
+  const drawHexagon = (ctx, cx, cy, radius, fill) => {
+    ctx.beginPath();
+    for (let i = 0; i < 6; i++) {
+      const angle = (i * 2 * Math.PI / 6);
+      const x = cx + radius * Math.cos(angle);
+      const y = cy + radius * Math.sin(angle);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.stroke();
+    if (fill && fill !== 'transparent') {
+      ctx.fillStyle = fill;
+      ctx.fill();
+    }
+  };
+
+  const drawStar = (ctx, cx, cy, outerRadius, innerRadius, fill) => {
+    ctx.beginPath();
+    for (let i = 0; i < 10; i++) {
+      const radius = i % 2 === 0 ? outerRadius : innerRadius;
+      const angle = (i * Math.PI / 5) - Math.PI / 2;
+      const x = cx + radius * Math.cos(angle);
+      const y = cy + radius * Math.sin(angle);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.closePath();
+    ctx.stroke();
+    if (fill && fill !== 'transparent') {
+      ctx.fillStyle = fill;
+      ctx.fill();
+    }
+  };
+
+  const drawAndGate = (ctx, x, y, width, height, fill) => {
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + width * 0.5, y);
+    ctx.arc(x + width * 0.5, y + height / 2, height / 2, -Math.PI / 2, Math.PI / 2);
+    ctx.lineTo(x, y + height);
+    ctx.closePath();
+    ctx.stroke();
+    if (fill && fill !== 'transparent') {
+      ctx.fillStyle = fill;
+      ctx.fill();
+    }
+  };
+
+  const drawOrGate = (ctx, x, y, width, height, fill) => {
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.quadraticCurveTo(x + width * 0.6, y, x + width, y + height / 2);
+    ctx.quadraticCurveTo(x + width * 0.6, y + height, x, y + height);
+    ctx.quadraticCurveTo(x + width * 0.2, y + height / 2, x, y);
+    ctx.stroke();
+    if (fill && fill !== 'transparent') {
+      ctx.fillStyle = fill;
+      ctx.fill();
+    }
+  };
+
+  const drawNotGate = (ctx, x, y, width, height, fill) => {
+    ctx.beginPath();
+    ctx.moveTo(x, y);
+    ctx.lineTo(x + width * 0.8, y + height / 2);
+    ctx.lineTo(x, y + height);
+    ctx.closePath();
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.arc(x + width * 0.9, y + height / 2, width * 0.1, 0, 2 * Math.PI);
+    ctx.stroke();
+
+    if (fill && fill !== 'transparent') {
+      ctx.fillStyle = fill;
+      ctx.fill();
+    }
+  };
+
+  const drawNandGate = (ctx, x, y, width, height, fill) => {
+    drawAndGate(ctx, x, y, width * 0.85, height, fill);
+    ctx.beginPath();
+    ctx.arc(x + width * 0.93, y + height / 2, width * 0.07, 0, 2 * Math.PI);
+    ctx.stroke();
+  };
+
+  const drawNorGate = (ctx, x, y, width, height, fill) => {
+    drawOrGate(ctx, x, y, width * 0.85, height, fill);
+    ctx.beginPath();
+    ctx.arc(x + width * 0.93, y + height / 2, width * 0.07, 0, 2 * Math.PI);
+    ctx.stroke();
+  };
+
+  const drawXorGate = (ctx, x, y, width, height, fill) => {
+    ctx.beginPath();
+    ctx.moveTo(x - width * 0.1, y);
+    ctx.quadraticCurveTo(x + width * 0.1, y + height / 2, x - width * 0.1, y + height);
+    ctx.stroke();
+    drawOrGate(ctx, x, y, width, height, fill);
+  };
+
+  const drawSineGraph = (ctx, x1, y1, x2, y2, color, lw) => {
+    const width = x2 - x1;
+    const heightRange = y2 - y1;
+    const amplitude = Math.abs(heightRange / 2) || 30;
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.strokeStyle = '#cbd5e1';
+    ctx.lineWidth = 1;
+    ctx.setLineDash([4, 4]);
+    ctx.moveTo(x1, y1);
+    ctx.lineTo(x2, y1);
+    ctx.stroke();
+
+    ctx.beginPath();
+    ctx.lineWidth = lw;
+    ctx.strokeStyle = color;
+    ctx.setLineDash([]);
+
+    const steps = Math.abs(width);
+    for (let i = 0; i <= steps; i += 2) {
+      const currentX = x1 + (width >= 0 ? i : -i);
+      const radians = (i / Math.max(1, Math.abs(width))) * Math.PI * 4;
+      const currentY = y1 - Math.sin(radians) * amplitude;
+
+      if (i === 0) ctx.moveTo(currentX, currentY);
+      else ctx.lineTo(currentX, currentY);
+    }
+    ctx.stroke();
+    ctx.restore();
+  };
+
+  const drawGraph = (ctx, element) => {
+    const { x, y, width, height, xMin, xMax, yMin, yMax, functions, showGrid, xLabel, yLabel, title } = element;
+
+    ctx.save();
+
+    // Draw border
+    ctx.strokeStyle = '#334155';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(x, y, width, height);
+
+    // Draw grid
+    if (showGrid) {
+      ctx.strokeStyle = '#e2e8f0';
+      ctx.lineWidth = 0.5;
+      ctx.setLineDash([2, 2]);
+
+      for (let i = 0; i <= 10; i++) {
+        const gridX = x + (width * i / 10);
+        ctx.beginPath();
+        ctx.moveTo(gridX, y);
+        ctx.lineTo(gridX, y + height);
+        ctx.stroke();
+      }
+
+      for (let i = 0; i <= 10; i++) {
+        const gridY = y + (height * i / 10);
+        ctx.beginPath();
+        ctx.moveTo(x, gridY);
+        ctx.lineTo(x + width, gridY);
+        ctx.stroke();
+      }
+      ctx.setLineDash([]);
+    }
+
+    // Draw axes
+    const xZero = x + ((0 - xMin) / (xMax - xMin)) * width;
+    const yZero = y + height - ((0 - yMin) / (yMax - yMin)) * height;
+
+    if (xZero >= x && xZero <= x + width) {
+      ctx.strokeStyle = '#64748b';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(xZero, y);
+      ctx.lineTo(xZero, y + height);
+      ctx.stroke();
+    }
+
+    if (yZero >= y && yZero <= y + height) {
+      ctx.strokeStyle = '#64748b';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(x, yZero);
+      ctx.lineTo(x + width, yZero);
+      ctx.stroke();
+    }
+
+    // Plot functions
+    functions.forEach((func, idx) => {
+      const colors = ['#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6'];
+      ctx.strokeStyle = colors[idx % colors.length];
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+
+      try {
+        for (let px = 0; px <= width; px++) {
+          const xVal = xMin + (px / width) * (xMax - xMin);
+          const yVal = eval(func.replace(/x/g, `(${xVal})`));
+          const py = y + height - ((yVal - yMin) / (yMax - yMin)) * height;
+
+          if (py >= y - 10 && py <= y + height + 10) {
+            if (px === 0) ctx.moveTo(x + px, py);
+            else ctx.lineTo(x + px, py);
+          }
+        }
+        ctx.stroke();
+      } catch (e) {}
+    });
+
+    // Draw labels
+    ctx.fillStyle = '#1e293b';
+    ctx.font = '12px sans-serif';
+    ctx.textAlign = 'center';
+
+    if (xLabel) ctx.fillText(xLabel, x + width / 2, y + height + 20);
+
+    if (yLabel) {
+      ctx.save();
+      ctx.translate(x - 25, y + height / 2);
+      ctx.rotate(-Math.PI / 2);
+      ctx.fillText(yLabel, 0, 0);
+      ctx.restore();
+    }
+
+    if (title) {
+      ctx.font = 'bold 14px sans-serif';
+      ctx.fillText(title, x + width / 2, y - 10);
+    }
+
+    ctx.restore();
+  };
+
+  // Draw grid
+  const drawGrid = (ctx, canvas) => {
+    if (!showGrid) return;
+
+    ctx.save();
+    ctx.strokeStyle = '#e2e8f0';
+    ctx.lineWidth = 1 / zoom;
+    ctx.setLineDash([]);
+
+    const scaledGridSize = gridSize;
+
+    for (let x = 0; x < canvas.width / zoom; x += scaledGridSize) {
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, canvas.height / zoom);
+      ctx.stroke();
+    }
+
+    for (let y = 0; y < canvas.height / zoom; y += scaledGridSize) {
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(canvas.width / zoom, y);
+      ctx.stroke();
+    }
+
+    ctx.restore();
+  };
+
+  // Render selection
+  const renderSelection = (ctx, element) => {
+    const bounds = getElementBounds(element);
+
+    ctx.save();
+    ctx.strokeStyle = '#3b82f6';
+    ctx.lineWidth = 2;
+    ctx.setLineDash([5, 5]);
+    ctx.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
+
+    // Draw resize handles
+    const handleSize = 8;
+    ctx.fillStyle = '#3b82f6';
+    const handles = [
+      { x: bounds.x, y: bounds.y },
+      { x: bounds.x + bounds.width, y: bounds.y },
+      { x: bounds.x + bounds.width, y: bounds.y + bounds.height },
+      { x: bounds.x, y: bounds.y + bounds.height }
+    ];
+    handles.forEach(h => {
+      ctx.fillRect(h.x - handleSize / 2, h.y - handleSize / 2, handleSize, handleSize);
+    });
+
+    ctx.restore();
+  };
+
+  // Main render function
+  const renderCanvas = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+
+    // Clear
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+    // Apply zoom and pan
+    ctx.save();
+    ctx.translate(pan.x, pan.y);
+    ctx.scale(zoom, zoom);
+
+    // Draw grid
+    drawGrid(ctx, canvas);
+
+    // Draw all elements
+    elements.forEach(element => {
+      renderElement(ctx, element);
+    });
+
+    // Draw current shape being drawn
+    if (isDrawing && currentShape) {
+      renderElement(ctx, currentShape);
+    }
+
+    ctx.restore();
+
+    // Draw selection (in screen space, not transformed)
+    if (selectedId) {
+      const elem = elements.find(e => e.id === selectedId);
+      if (elem) {
+        ctx.save();
+        ctx.translate(pan.x, pan.y);
+        ctx.scale(zoom, zoom);
+        renderSelection(ctx, elem);
+        ctx.restore();
+      }
+    }
+
+    // Draw eraser hover feedback (red outline)
+    if (tool === 'eraser' && hoveredId) {
+      const elem = elements.find(e => e.id === hoveredId);
+      if (elem) {
+        ctx.save();
+        ctx.translate(pan.x, pan.y);
+        ctx.scale(zoom, zoom);
+
+        const bounds = getElementBounds(elem);
+        ctx.strokeStyle = '#ef4444'; // Red color
+        ctx.lineWidth = 2;
+        ctx.setLineDash([5, 5]);
+        ctx.strokeRect(bounds.x, bounds.y, bounds.width, bounds.height);
+
+        ctx.restore();
+      }
+    }
+  };
+
+  // Mouse event handlers
+  const handlePointerDown = (e) => {
+    const { x, y, pressure } = getCoordinates(e);
+
+    // Eraser tool mode - delete on click
+    if (tool === 'eraser') {
+      const clickedId = getElementAtPoint(x, y);
+      if (clickedId) {
+        const newElements = elements.filter(el => el.id !== clickedId);
+        setElements(newElements);
+        saveToHistory(newElements);
+        // Clear selection if we deleted the selected element
+        if (clickedId === selectedId) {
+          setSelectedId(null);
+          setShowProperties(false);
+        }
+      }
+      return;
+    }
+
+    // Select tool mode
+    if (tool === 'select') {
+      const clickedId = getElementAtPoint(x, y);
+
+      if (clickedId) {
+        // Start dragging if an element is clicked
+        setSelectedId(clickedId);
+        setShowProperties(true);
+        setIsDragging(true);
+        setDragStartPos({ x, y });
+
+        // Store original element position
+        const elem = elements.find(e => e.id === clickedId);
+        if (elem) {
+          setDragElementStart({
+            x: elem.x,
+            y: elem.y,
+            x1: elem.x1,
+            y1: elem.y1,
+            x2: elem.x2,
+            y2: elem.y2,
+            points: elem.points ? [...elem.points] : null
+          });
+        }
+      } else {
+        // Clicked empty space - deselect
+        setSelectedId(null);
+        setShowProperties(false);
+      }
+      return;
+    }
+
+    // Drawing mode
+    setIsDrawing(true);
+    setStartPos({ x, y });
+    tempPointsRef.current = [];
+
+    // Handle text tool immediately
+    if (tool === 'text') {
+      const newElement = {
+        id: generateId(),
+        type: 'text',
+        x, y,
+        text: textLabel,
+        fontSize: 18,
+        strokeColor,
+        created: Date.now(),
+        modified: Date.now()
+      };
+      const newElements = [...elements, newElement];
+      setElements(newElements);
+      saveToHistory(newElements);
+      setIsDrawing(false);
+      return;
+    }
+
+    // Handle ground tool immediately
+    if (tool === 'ground') {
+      const newElement = {
+        id: generateId(),
+        type: 'ground',
+        x, y,
+        strokeColor,
+        lineWidth,
+        created: Date.now(),
+        modified: Date.now()
+      };
+      const newElements = [...elements, newElement];
+      setElements(newElements);
+      saveToHistory(newElements);
+      setIsDrawing(false);
+      return;
+    }
+
+    // Start pen tool
+    if (tool === 'pen') {
+      tempPointsRef.current = [{ x, y }];
+      setCurrentShape({
+        type: 'pen',
+        points: [{ x, y }],
+        strokeColor,
+        lineWidth: lineWidth * (0.5 + pressure),
+        isDashed
+      });
+    }
+  };
+
+  const handlePointerMove = (e) => {
+    const { x, y, pressure } = getCoordinates(e);
+
+    // Handle hover feedback for eraser
+    if (tool === 'eraser' && !isDrawing) {
+      const hoverId = getElementAtPoint(x, y);
+      setHoveredId(hoverId);
+      return;
+    }
+
+    // Handle dragging in select mode
+    if (tool === 'select' && isDragging && selectedId && dragElementStart) {
+      const dx = x - dragStartPos.x;
+      const dy = y - dragStartPos.y;
+
+      const newElements = elements.map(el => {
+        if (el.id !== selectedId) return el;
+
+        const updated = { ...el, modified: Date.now() };
+
+        // Update position based on element type
+        if (el.x !== undefined) {
+          updated.x = dragElementStart.x + dx;
+          updated.y = dragElementStart.y + dy;
+        }
+
+        if (el.x1 !== undefined) {
+          updated.x1 = dragElementStart.x1 + dx;
+          updated.y1 = dragElementStart.y1 + dy;
+          updated.x2 = dragElementStart.x2 + dx;
+          updated.y2 = dragElementStart.y2 + dy;
+        }
+
+        if (el.points && dragElementStart.points) {
+          updated.points = dragElementStart.points.map(pt => ({
+            x: pt.x + dx,
+            y: pt.y + dy
+          }));
+        }
+
+        return updated;
+      });
+
+      setElements(newElements);
+      return;
+    }
+
+    // Update hover state for select tool
+    if (tool === 'select' && !isDrawing && !isDragging) {
+      const hoverId = getElementAtPoint(x, y);
+      setHoveredId(hoverId);
+      return;
+    }
+
+    if (!isDrawing) return;
+
+    // Handle pen tool
+    if (tool === 'pen') {
+      tempPointsRef.current.push({ x, y });
+      setCurrentShape({
+        type: 'pen',
+        points: [...tempPointsRef.current],
+        strokeColor,
+        lineWidth: lineWidth * (0.5 + pressure),
+        isDashed
+      });
+      renderCanvas();
+      return;
+    }
+
+    // Handle shape tools
+    const width = x - startPos.x;
+    const height = y - startPos.y;
+
+    let shape = null;
+
+    switch (tool) {
+      case 'rect':
+        shape = { type: 'rect', x: startPos.x, y: startPos.y, width, height, strokeColor, fillColor, lineWidth, isDashed };
+        break;
+      case 'circle':
+        const radius = Math.sqrt(width ** 2 + height ** 2);
+        shape = { type: 'circle', x: startPos.x, y: startPos.y, radius, strokeColor, fillColor, lineWidth, isDashed };
+        break;
+      case 'ellipse':
+        shape = { type: 'ellipse', x: startPos.x, y: startPos.y, rx: Math.abs(width), ry: Math.abs(height), strokeColor, fillColor, lineWidth, isDashed };
+        break;
+      case 'triangle':
+        shape = { type: 'triangle', x: startPos.x, y: startPos.y, width, height, strokeColor, fillColor, lineWidth, isDashed };
+        break;
+      case 'line':
+        shape = { type: 'line', x1: startPos.x, y1: startPos.y, x2: x, y2: y, strokeColor, lineWidth, isDashed, hasArrow };
+        break;
+      case 'parallelogram':
+        shape = { type: 'parallelogram', x: startPos.x, y: startPos.y, width, height, strokeColor, fillColor, lineWidth, isDashed };
+        break;
+      case 'rhombus':
+        shape = { type: 'rhombus', x: startPos.x, y: startPos.y, width, height, strokeColor, fillColor, lineWidth, isDashed };
+        break;
+      case 'pentagon':
+        shape = { type: 'pentagon', x: startPos.x, y: startPos.y, radius: Math.sqrt(width ** 2 + height ** 2), strokeColor, fillColor, lineWidth, isDashed };
+        break;
+      case 'hexagon':
+        shape = { type: 'hexagon', x: startPos.x, y: startPos.y, radius: Math.sqrt(width ** 2 + height ** 2), strokeColor, fillColor, lineWidth, isDashed };
+        break;
+      case 'star':
+        const outerR = Math.sqrt(width ** 2 + height ** 2);
+        shape = { type: 'star', x: startPos.x, y: startPos.y, outerRadius: outerR, innerRadius: outerR * 0.4, strokeColor, fillColor, lineWidth, isDashed };
+        break;
+      case 'resistor':
+      case 'capacitor':
+      case 'inductor':
+      case 'battery':
+      case 'diode':
+        shape = { type: tool, x1: startPos.x, y1: startPos.y, x2: x, y2: y, strokeColor, lineWidth };
+        break;
+      case 'voltmeter':
+      case 'ammeter':
+        const r = Math.sqrt(width ** 2 + height ** 2);
+        shape = { type: tool, x: startPos.x, y: startPos.y, radius: r, strokeColor, lineWidth };
+        break;
+      case 'and-gate':
+      case 'or-gate':
+      case 'not-gate':
+      case 'nand-gate':
+      case 'nor-gate':
+      case 'xor-gate':
+        shape = { type: tool, x: startPos.x, y: startPos.y, width, height, strokeColor, fillColor, lineWidth };
+        break;
+      case 'sine':
+        shape = { type: 'sine', x1: startPos.x, y1: startPos.y, x2: x, y2: y, strokeColor, lineWidth };
+        break;
+    }
+
+    if (shape) {
+      setCurrentShape(shape);
+      renderCanvas();
+    }
+  };
+
+  const handlePointerUp = (e) => {
+    // Handle end of dragging
+    if (isDragging) {
+      setIsDragging(false);
+      setDragStartPos({ x: 0, y: 0 });
+      setDragElementStart(null);
+      // Save to history after drag complete
+      saveToHistory(elements);
+      return;
+    }
+
+    if (!isDrawing) return;
+    setIsDrawing(false);
+
+    // Finalize element
+    if (currentShape || tempPointsRef.current.length > 0) {
+      let finalElement;
+
+      if (tool === 'pen' && tempPointsRef.current.length > 0) {
+        finalElement = {
+          id: generateId(),
+          type: 'pen',
+          points: [...tempPointsRef.current],
+          strokeColor,
+          lineWidth,
+          isDashed,
+          created: Date.now(),
+          modified: Date.now()
+        };
+      } else if (currentShape) {
+        finalElement = {
+          id: generateId(),
+          ...currentShape,
+          created: Date.now(),
+          modified: Date.now()
+        };
+      }
+
+      if (finalElement) {
+        const newElements = [...elements, finalElement];
+        setElements(newElements);
+        saveToHistory(newElements);
+      }
+    }
+
+    setCurrentShape(null);
+    tempPointsRef.current = [];
+  };
+
+  // Save/Load project functions
+  const saveProject = () => {
+    const project = {
+      version: '3.0',
+      name: projectName,
+      created: Date.now(),
+      modified: Date.now(),
+      elements,
+      viewport: { zoom, pan, showGrid },
+      settings: { gridSize, snapToGrid }
+    };
+
+    const blob = new Blob([JSON.stringify(project, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `${projectName.replace(/[^a-z0-9]/gi, '_')}.tikz.json`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  };
+
+  const loadProject = (file) => {
+    const reader = new FileReader();
+    reader.onload = (e) => {
+      try {
+        const project = JSON.parse(e.target.result);
+
+        if (project.version !== '3.0') {
+          setError('Unsupported project version. This requires v3.0 with element-based architecture.');
+          return;
+        }
+
+        setProjectName(project.name);
+        setElements(project.elements);
+        setHistoryStack([project.elements]);
+        setHistoryIndex(0);
+        setZoom(project.viewport.zoom || 1);
+        setPan(project.viewport.pan || { x: 0, y: 0 });
+        setShowGrid(project.viewport.showGrid || false);
+        setSnapToGrid(project.settings.snapToGrid || false);
+        setSelectedId(null);
+        setShowProperties(false);
+      } catch (err) {
+        setError('Failed to load project: ' + err.message);
+      }
+    };
+    reader.readAsText(file);
+  };
+
+  const handleFileSelect = (e) => {
+    const file = e.target.files?.[0];
+    if (file) loadProject(file);
+  };
+
+  const exportAsPNG = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+
+    canvas.toBlob((blob) => {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `${projectName}.png`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
+    });
+  };
+
+  // Generate TikZ code from elements
+  const generateTikZCode = async () => {
+    setLoading(true);
+    setError(null);
+
+    try {
+      const response = await fetch('/api/generate-tikz', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          elements,
+          projectName
+        })
+      });
+
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
+
+      const data = await response.json();
+
+      if (data.error) {
+        throw new Error(data.error);
+      }
+
+      setTikzCode(data.tikzCode);
+      setActiveTab('code');
+    } catch (err) {
+      setError(err.message || 'Failed to generate TikZ code');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  // Render TikZ preview as image
+  const renderPreview = async () => {
+    if (!tikzCode) {
+      setError('Generate TikZ code first');
+      return;
+    }
+
+    setRenderingPreview(true);
+    setError(null);
+    setPreviewProgress(0);
+    setPreviewStatus('Preparing LaTeX document...');
+
+    try {
+      // Simulate progress updates
+      const progressInterval = setInterval(() => {
+        setPreviewProgress(prev => Math.min(prev + 10, 90));
+      }, 200);
+
+      setPreviewStatus('Compiling with pdflatex...');
+
+      const response = await fetch('/api/render-tikz', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ tikzCode })
+      });
+
+      clearInterval(progressInterval);
+
+      if (!response.ok) {
+        const errorData = await response.json();
+        throw new Error(errorData.error || 'Failed to render preview');
+      }
+
+      const data = await response.json();
+
+      if (data.error) {
+        throw new Error(data.error);
+      }
+
+      setPreviewStatus('Converting to image...');
+      setPreviewProgress(100);
+      setPreviewImage(data.image);
+
+      setTimeout(() => {
+        setPreviewStatus('');
+        setPreviewProgress(0);
+      }, 500);
+
+    } catch (err) {
+      setError(err.message || 'Failed to render TikZ preview');
+      setPreviewProgress(0);
+      setPreviewStatus('');
+    } finally {
+      setRenderingPreview(false);
+    }
+  };
+
+  // Insert graph as element
+  const insertGraph = () => {
+    const newElement = {
+      id: generateId(),
+      type: 'graph',
+      x: 100,
+      y: 100,
+      ...graphConfig,
+      strokeColor,
+      lineWidth,
+      created: Date.now(),
+      modified: Date.now()
+    };
+    const newElements = [...elements, newElement];
+    setElements(newElements);
+    saveToHistory(newElements);
+    setShowGraphModal(false);
+  };
+
+  // Canvas resize handler
+  useEffect(() => {
+    if (activeTab !== 'design') return;
+
+    const resizeCanvas = () => {
+      const canvas = canvasRef.current;
+      const container = containerRef.current;
+      if (!canvas || !container) return;
+
+      canvas.width = container.clientWidth;
+      canvas.height = container.clientHeight;
+      renderCanvas();
+    };
+
+    const timer = setTimeout(resizeCanvas, 100);
+    window.addEventListener('resize', resizeCanvas);
+
+    return () => {
+      clearTimeout(timer);
+      window.removeEventListener('resize', resizeCanvas);
+    };
+  }, [activeTab, elements, zoom, pan, showGrid, selectedId]);
+
+  // Get selected element
+  const selectedElement = selectedId ? elements.find(e => e.id === selectedId) : null;
+
+  return (
+    <div className="h-screen flex flex-col bg-gradient-to-br from-slate-50 to-slate-100">
+      {/* Top Bar */}
+      <header className="bg-white border-b border-slate-200 px-6 py-3 flex items-center justify-between shadow-sm">
+        <div className="flex items-center gap-4">
+          <h1 className="text-2xl font-bold bg-gradient-to-r from-blue-600 to-purple-600 bg-clip-text text-transparent">
+            TikZ Generator
+          </h1>
+          <input
+            type="text"
+            value={projectName}
+            onChange={(e) => setProjectName(e.target.value)}
+            className="text-lg font-semibold border-none bg-transparent focus:outline-none focus:bg-slate-50 px-2 py-1 rounded"
+            placeholder="Untitled Diagram"
+          />
+        </div>
+
+        <nav className="flex gap-2">
+          <button
+            onClick={() => setActiveTab('design')}
+            className={`px-4 py-2 rounded-lg font-medium transition ${activeTab === 'design' ? 'bg-blue-500 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}
+          >
+            Design
+          </button>
+          <button
+            onClick={() => setActiveTab('code')}
+            className={`px-4 py-2 rounded-lg font-medium transition ${activeTab === 'code' ? 'bg-blue-500 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}
+          >
+            Code
+          </button>
+          <button
+            onClick={() => setActiveTab('preview')}
+            className={`px-4 py-2 rounded-lg font-medium transition ${activeTab === 'preview' ? 'bg-blue-500 text-white' : 'bg-slate-100 text-slate-700 hover:bg-slate-200'}`}
+          >
+            Preview
+          </button>
+        </nav>
+      </header>
+
+      {/* Main Content */}
+      <div className="flex-1 flex overflow-hidden">
+        {activeTab === 'design' && (
+          <>
+            {/* Left Sidebar - Tools */}
+            <aside className="w-64 bg-white border-r border-slate-200 overflow-y-auto flex-shrink-0">
+              <div className="p-4 space-y-4">
+                {/* Action Buttons */}
+                <div className="space-y-2">
+                  <button
+                    onClick={clearCanvas}
+                    className="w-full py-2 px-4 bg-red-50 text-red-600 rounded-lg font-medium hover:bg-red-100 transition border border-red-200"
+                  >
+                    🗑️ Clear All
+                  </button>
+                  <button
+                    onClick={handleUndo}
+                    disabled={!canUndo}
+                    className="w-full py-2 px-4 bg-slate-100 text-slate-700 rounded-lg font-medium hover:bg-slate-200 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    ↶ Undo
+                  </button>
+                  <button
+                    onClick={handleRedo}
+                    disabled={!canRedo}
+                    className="w-full py-2 px-4 bg-slate-100 text-slate-700 rounded-lg font-medium hover:bg-slate-200 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    ↷ Redo
+                  </button>
+                </div>
+
+                {/* Zoom Controls */}
+                <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
+                  <h5 className="text-xs font-bold text-slate-600 uppercase mb-2">Zoom</h5>
+                  <div className="flex items-center gap-2">
+                    <button onClick={handleZoomOut} className="px-3 py-1 bg-white border border-slate-300 rounded hover:bg-slate-50">−</button>
+                    <span className="text-sm font-mono flex-1 text-center">{Math.round(zoom * 100)}%</span>
+                    <button onClick={handleZoomIn} className="px-3 py-1 bg-white border border-slate-300 rounded hover:bg-slate-50">+</button>
+                    <button onClick={handleZoomReset} className="px-3 py-1 bg-white border border-slate-300 rounded hover:bg-slate-50" title="Reset">⊙</button>
+                  </div>
+                </div>
+
+                {/* Grid Controls */}
+                <div className="bg-slate-50 p-3 rounded-lg border border-slate-200">
+                  <label className="flex items-center gap-2 text-sm cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={showGrid}
+                      onChange={(e) => setShowGrid(e.target.checked)}
+                      className="w-4 h-4"
+                    />
+                    <span className="text-slate-700">Show Grid</span>
+                  </label>
+                  <label className="flex items-center gap-2 text-sm cursor-pointer mt-2">
+                    <input
+                      type="checkbox"
+                      checked={snapToGrid}
+                      onChange={(e) => setSnapToGrid(e.target.checked)}
+                      className="w-4 h-4"
+                    />
+                    <span className="text-slate-700">Snap to Grid</span>
+                  </label>
+                </div>
+
+                {/* Basic Tools */}
+                <div>
+                  <h5 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Tools</h5>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button onClick={() => setTool('select')} className={`py-2 px-3 rounded-lg text-sm font-medium transition border ${tool === 'select' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>⬚ Select</button>
+                    <button onClick={() => setTool('eraser')} className={`py-2 px-3 rounded-lg text-sm font-medium transition border ${tool === 'eraser' ? 'bg-red-500 text-white border-red-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>🧹 Eraser</button>
+                    <button onClick={() => setTool('pen')} className={`py-2 px-3 rounded-lg text-sm font-medium transition border ${tool === 'pen' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>✏️ Pen</button>
+                    <button onClick={() => setTool('line')} className={`py-2 px-3 rounded-lg text-sm font-medium transition border ${tool === 'line' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>📏 Line</button>
+                    <button onClick={() => setTool('text')} className={`py-2 px-3 rounded-lg text-sm font-medium transition border ${tool === 'text' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>T Text</button>
+                  </div>
+                  {tool === 'text' && (
+                    <input
+                      type="text"
+                      value={textLabel}
+                      onChange={(e) => setTextLabel(e.target.value)}
+                      className="w-full mt-2 px-3 py-2 border border-slate-300 rounded-lg text-sm"
+                      placeholder="Enter text..."
+                    />
+                  )}
+                </div>
+
+                {/* Basic Shapes */}
+                <div>
+                  <h5 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Shapes</h5>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button onClick={() => setTool('rect')} className={`py-2 px-3 rounded-lg text-sm font-medium transition border ${tool === 'rect' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>▭ Rectangle</button>
+                    <button onClick={() => setTool('circle')} className={`py-2 px-3 rounded-lg text-sm font-medium transition border ${tool === 'circle' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>○ Circle</button>
+                    <button onClick={() => setTool('triangle')} className={`py-2 px-3 rounded-lg text-sm font-medium transition border ${tool === 'triangle' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>△ Triangle</button>
+                    <button onClick={() => setTool('ellipse')} className={`py-2 px-3 rounded-lg text-sm font-medium transition border ${tool === 'ellipse' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>⬭ Ellipse</button>
+                  </div>
+                </div>
+
+                {/* Polygons */}
+                <div>
+                  <h5 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Polygons</h5>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button onClick={() => setTool('parallelogram')} className={`py-2 px-3 rounded-lg text-xs font-medium transition border ${tool === 'parallelogram' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>▱ Parallelogram</button>
+                    <button onClick={() => setTool('rhombus')} className={`py-2 px-3 rounded-lg text-xs font-medium transition border ${tool === 'rhombus' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>◊ Rhombus</button>
+                    <button onClick={() => setTool('pentagon')} className={`py-2 px-3 rounded-lg text-xs font-medium transition border ${tool === 'pentagon' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>⬠ Pentagon</button>
+                    <button onClick={() => setTool('hexagon')} className={`py-2 px-3 rounded-lg text-xs font-medium transition border ${tool === 'hexagon' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>⬡ Hexagon</button>
+                    <button onClick={() => setTool('star')} className={`py-2 px-3 rounded-lg text-xs font-medium transition border ${tool === 'star' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>★ Star</button>
+                  </div>
+                </div>
+
+                {/* Circuit Components */}
+                <div>
+                  <h5 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Circuit</h5>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button onClick={() => setTool('resistor')} className={`py-2 px-3 rounded-lg text-xs font-medium transition border ${tool === 'resistor' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>⚡ Resistor</button>
+                    <button onClick={() => setTool('capacitor')} className={`py-2 px-3 rounded-lg text-xs font-medium transition border ${tool === 'capacitor' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>🔋 Capacitor</button>
+                    <button onClick={() => setTool('inductor')} className={`py-2 px-3 rounded-lg text-xs font-medium transition border ${tool === 'inductor' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>🌀 Inductor</button>
+                    <button onClick={() => setTool('battery')} className={`py-2 px-3 rounded-lg text-xs font-medium transition border ${tool === 'battery' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>🔌 Battery</button>
+                    <button onClick={() => setTool('diode')} className={`py-2 px-3 rounded-lg text-xs font-medium transition border ${tool === 'diode' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>🔺 Diode</button>
+                    <button onClick={() => setTool('ground')} className={`py-2 px-3 rounded-lg text-xs font-medium transition border ${tool === 'ground' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>⏚ Ground</button>
+                  </div>
+                </div>
+
+                {/* Measurement */}
+                <div>
+                  <h5 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Measurement</h5>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button onClick={() => setTool('voltmeter')} className={`py-2 px-3 rounded-lg text-xs font-medium transition border ${tool === 'voltmeter' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>Ⓥ Voltmeter</button>
+                    <button onClick={() => setTool('ammeter')} className={`py-2 px-3 rounded-lg text-xs font-medium transition border ${tool === 'ammeter' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>Ⓐ Ammeter</button>
+                  </div>
+                </div>
+
+                {/* Logic Gates */}
+                <div>
+                  <h5 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Logic Gates</h5>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button onClick={() => setTool('and-gate')} className={`py-2 px-3 rounded-lg text-xs font-medium transition border ${tool === 'and-gate' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>AND</button>
+                    <button onClick={() => setTool('or-gate')} className={`py-2 px-3 rounded-lg text-xs font-medium transition border ${tool === 'or-gate' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>OR</button>
+                    <button onClick={() => setTool('not-gate')} className={`py-2 px-3 rounded-lg text-xs font-medium transition border ${tool === 'not-gate' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>NOT</button>
+                    <button onClick={() => setTool('nand-gate')} className={`py-2 px-3 rounded-lg text-xs font-medium transition border ${tool === 'nand-gate' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>NAND</button>
+                    <button onClick={() => setTool('nor-gate')} className={`py-2 px-3 rounded-lg text-xs font-medium transition border ${tool === 'nor-gate' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>NOR</button>
+                    <button onClick={() => setTool('xor-gate')} className={`py-2 px-3 rounded-lg text-xs font-medium transition border ${tool === 'xor-gate' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>XOR</button>
+                  </div>
+                </div>
+
+                {/* Math Plots */}
+                <div>
+                  <h5 className="text-xs font-bold text-slate-500 uppercase tracking-wider mb-2">Math Plots</h5>
+                  <div className="space-y-2">
+                    <button onClick={() => setTool('sine')} className={`w-full py-2 px-3 rounded-lg text-sm font-medium transition border text-left ${tool === 'sine' ? 'bg-blue-500 text-white border-blue-500' : 'bg-slate-50 text-slate-700 border-slate-200 hover:bg-slate-100'}`}>📈 Sine Wave</button>
+                    <button onClick={() => setShowGraphModal(true)} className="w-full py-2 px-3 rounded-lg text-sm font-medium transition border text-left bg-gradient-to-r from-purple-50 to-blue-50 text-purple-700 border-purple-200 hover:from-purple-100 hover:to-blue-100">📊 Function Graph</button>
+                  </div>
+                </div>
+
+                {/* Style Settings */}
+                <div className="bg-slate-50 p-4 rounded-lg border border-slate-200">
+                  <h5 className="text-sm font-semibold text-slate-700 mb-3">Style</h5>
+
+                  <div className="space-y-3">
+                    <div>
+                      <label className="text-xs text-slate-600 block mb-1">Color</label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="color"
+                          value={strokeColor}
+                          onChange={(e) => setStrokeColor(e.target.value)}
+                          className="w-12 h-10 border border-slate-300 rounded cursor-pointer"
+                        />
+                        <span className="text-xs font-mono text-slate-600">{strokeColor.toUpperCase()}</span>
+                      </div>
+                      <div className="grid grid-cols-5 gap-1 mt-2">
+                        {colorPresets.map(color => (
+                          <button
+                            key={color}
+                            onClick={() => setStrokeColor(color)}
+                            className="w-8 h-8 rounded border-2 border-slate-300 hover:border-blue-500 transition"
+                            style={{ backgroundColor: color }}
+                            title={color}
+                          />
+                        ))}
+                      </div>
+                    </div>
+
+                    <div>
+                      <label className="text-xs text-slate-600 block mb-1">Line Width: {lineWidth}px</label>
+                      <input
+                        type="range"
+                        min="1"
+                        max="10"
+                        value={lineWidth}
+                        onChange={(e) => setLineWidth(Number(e.target.value))}
+                        className="w-full"
+                      />
+                    </div>
+
+                    <label className="flex items-center gap-2 text-sm cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={isDashed}
+                        onChange={(e) => setIsDashed(e.target.checked)}
+                        className="w-4 h-4"
+                      />
+                      <span className="text-slate-700">Dashed Line</span>
+                    </label>
+
+                    <label className="flex items-center gap-2 text-sm cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={hasArrow}
+                        onChange={(e) => setHasArrow(e.target.checked)}
+                        className="w-4 h-4"
+                      />
+                      <span className="text-slate-700">Arrow Head</span>
+                    </label>
+
+                    <div>
+                      <label className="text-xs text-slate-600 block mb-1">Fill Color</label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="color"
+                          value={fillColor === 'transparent' ? '#ffffff' : fillColor}
+                          onChange={(e) => setFillColor(e.target.value)}
+                          className="w-12 h-10 border border-slate-300 rounded cursor-pointer"
+                        />
+                        <button
+                          onClick={() => setFillColor('transparent')}
+                          className={`text-xs px-2 py-1 rounded ${fillColor === 'transparent' ? 'bg-blue-500 text-white' : 'bg-slate-200 text-slate-700'}`}
+                        >
+                          None
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                {/* File Operations */}
+                <div className="space-y-2">
+                  <button onClick={saveProject} className="w-full py-2 px-4 bg-green-500 text-white rounded-lg font-medium hover:bg-green-600 transition">
+                    💾 Save Project
+                  </button>
+                  <label className="block">
+                    <input
+                      type="file"
+                      accept=".json"
+                      onChange={handleFileSelect}
+                      className="hidden"
+                    />
+                    <div className="w-full py-2 px-4 bg-blue-500 text-white rounded-lg font-medium hover:bg-blue-600 transition text-center cursor-pointer">
+                      📁 Load Project
+                    </div>
+                  </label>
+                  <button onClick={exportAsPNG} className="w-full py-2 px-4 bg-purple-500 text-white rounded-lg font-medium hover:bg-purple-600 transition">
+                    📷 Export PNG
+                  </button>
+                </div>
+              </div>
+            </aside>
+
+            {/* Canvas Area */}
+            <div className="flex-1 flex flex-col p-4 gap-4">
+              <div className="flex-1 bg-white rounded-xl shadow-lg overflow-hidden relative" ref={containerRef}>
+                <canvas
+                  ref={canvasRef}
+                  onPointerDown={handlePointerDown}
+                  onPointerMove={handlePointerMove}
+                  onPointerUp={handlePointerUp}
+                  className={`touch-none ${
+                    tool === 'select' ? (hoveredId ? 'cursor-move' : 'cursor-default') :
+                    tool === 'eraser' ? 'cursor-not-allowed' :
+                    'cursor-crosshair'
+                  }`}
+                  style={{ width: '100%', height: '100%' }}
+                />
+              </div>
+
+              <div className="flex gap-2 justify-center">
+                <button
+                  onClick={generateTikZCode}
+                  disabled={loading || elements.length === 0}
+                  className="px-6 py-3 bg-gradient-to-r from-blue-500 to-purple-600 text-white rounded-lg font-bold hover:from-blue-600 hover:to-purple-700 transition disabled:opacity-50 disabled:cursor-not-allowed shadow-lg"
+                >
+                  {loading ? '⏳ Generating...' : '🤖 Generate TikZ Code with AI'}
+                </button>
+              </div>
+            </div>
+
+            {/* Right Sidebar - Properties Panel */}
+            {showProperties && selectedElement && (
+              <aside className="w-80 bg-white rounded-xl shadow-lg p-5 ml-4 flex-shrink-0 overflow-y-auto">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="font-bold text-lg">Properties</h3>
+                  <button
+                    onClick={() => {
+                      setShowProperties(false);
+                      setSelectedId(null);
+                    }}
+                    className="text-slate-400 hover:text-slate-600 text-xl"
+                  >
+                    ✕
+                  </button>
+                </div>
+
+                {/* Element Info */}
+                <div className="mb-4 p-3 bg-slate-50 rounded-lg">
+                  <p className="text-xs text-slate-600">Type: <span className="font-semibold">{selectedElement.type}</span></p>
+                  <p className="text-xs text-slate-600">ID: <span className="font-mono text-[10px]">{selectedElement.id}</span></p>
+                </div>
+
+                {/* Position & Size */}
+                {(selectedElement.x !== undefined || selectedElement.x1 !== undefined) && (
+                  <div className="mb-4">
+                    <h4 className="text-sm font-semibold text-slate-700 mb-2">Position</h4>
+                    <div className="space-y-2">
+                      {selectedElement.x !== undefined && (
+                        <>
+                          <div>
+                            <label className="text-xs text-slate-600">X</label>
+                            <input
+                              type="number"
+                              value={Math.round(selectedElement.x)}
+                              onChange={(e) => updateElementProperty(selectedId, 'x', Number(e.target.value))}
+                              onBlur={commitPropertyChange}
+                              className="w-full px-2 py-1 border border-slate-300 rounded text-sm"
+                            />
+                          </div>
+                          <div>
+                            <label className="text-xs text-slate-600">Y</label>
+                            <input
+                              type="number"
+                              value={Math.round(selectedElement.y)}
+                              onChange={(e) => updateElementProperty(selectedId, 'y', Number(e.target.value))}
+                              onBlur={commitPropertyChange}
+                              className="w-full px-2 py-1 border border-slate-300 rounded text-sm"
+                            />
+                          </div>
+                        </>
+                      )}
+                      {selectedElement.width !== undefined && (
+                        <div>
+                          <label className="text-xs text-slate-600">Width</label>
+                          <input
+                            type="number"
+                            value={Math.round(selectedElement.width)}
+                            onChange={(e) => updateElementProperty(selectedId, 'width', Number(e.target.value))}
+                            onBlur={commitPropertyChange}
+                            className="w-full px-2 py-1 border border-slate-300 rounded text-sm"
+                          />
+                        </div>
+                      )}
+                      {selectedElement.height !== undefined && (
+                        <div>
+                          <label className="text-xs text-slate-600">Height</label>
+                          <input
+                            type="number"
+                            value={Math.round(selectedElement.height)}
+                            onChange={(e) => updateElementProperty(selectedId, 'height', Number(e.target.value))}
+                            onBlur={commitPropertyChange}
+                            className="w-full px-2 py-1 border border-slate-300 rounded text-sm"
+                          />
+                        </div>
+                      )}
+                      {selectedElement.radius !== undefined && (
+                        <div>
+                          <label className="text-xs text-slate-600">Radius</label>
+                          <input
+                            type="number"
+                            value={Math.round(selectedElement.radius)}
+                            onChange={(e) => updateElementProperty(selectedId, 'radius', Number(e.target.value))}
+                            onBlur={commitPropertyChange}
+                            className="w-full px-2 py-1 border border-slate-300 rounded text-sm"
+                          />
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+
+                {/* Text Properties */}
+                {selectedElement.type === 'text' && (
+                  <div className="mb-4">
+                    <h4 className="text-sm font-semibold text-slate-700 mb-2">Text</h4>
+                    <div className="space-y-2">
+                      <div>
+                        <label className="text-xs text-slate-600">Content</label>
+                        <input
+                          type="text"
+                          value={selectedElement.text || ''}
+                          onChange={(e) => updateElementProperty(selectedId, 'text', e.target.value)}
+                          onBlur={commitPropertyChange}
+                          className="w-full px-2 py-1 border border-slate-300 rounded text-sm"
+                        />
+                      </div>
+                      <div>
+                        <label className="text-xs text-slate-600">Font Size</label>
+                        <input
+                          type="number"
+                          min="8"
+                          max="72"
+                          value={selectedElement.fontSize || 18}
+                          onChange={(e) => updateElementProperty(selectedId, 'fontSize', Number(e.target.value))}
+                          onBlur={commitPropertyChange}
+                          className="w-full px-2 py-1 border border-slate-300 rounded text-sm"
+                        />
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Style Properties */}
+                <div className="mb-4">
+                  <h4 className="text-sm font-semibold text-slate-700 mb-2">Style</h4>
+                  <div className="space-y-2">
+                    <div>
+                      <label className="text-xs text-slate-600">Stroke Color</label>
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="color"
+                          value={selectedElement.strokeColor || strokeColor}
+                          onChange={(e) => updateElementProperty(selectedId, 'strokeColor', e.target.value)}
+                          onBlur={commitPropertyChange}
+                          className="w-12 h-8 border border-slate-300 rounded cursor-pointer"
+                        />
+                        <span className="text-xs font-mono">{(selectedElement.strokeColor || strokeColor).toUpperCase()}</span>
+                      </div>
+                    </div>
+
+                    {selectedElement.fillColor !== undefined && (
+                      <div>
+                        <label className="text-xs text-slate-600">Fill Color</label>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="color"
+                            value={selectedElement.fillColor === 'transparent' ? '#ffffff' : selectedElement.fillColor}
+                            onChange={(e) => updateElementProperty(selectedId, 'fillColor', e.target.value)}
+                            onBlur={commitPropertyChange}
+                            className="w-12 h-8 border border-slate-300 rounded cursor-pointer"
+                          />
+                          <button
+                            onClick={() => {
+                              updateElementProperty(selectedId, 'fillColor', 'transparent');
+                              commitPropertyChange();
+                            }}
+                            className={`text-xs px-2 py-1 rounded ${selectedElement.fillColor === 'transparent' ? 'bg-blue-500 text-white' : 'bg-slate-200 text-slate-700'}`}
+                          >
+                            None
+                          </button>
+                        </div>
+                      </div>
+                    )}
+
+                    {selectedElement.lineWidth !== undefined && (
+                      <div>
+                        <label className="text-xs text-slate-600">Line Width: {selectedElement.lineWidth}px</label>
+                        <input
+                          type="range"
+                          min="1"
+                          max="20"
+                          value={selectedElement.lineWidth}
+                          onChange={(e) => updateElementProperty(selectedId, 'lineWidth', Number(e.target.value))}
+                          onBlur={commitPropertyChange}
+                          className="w-full"
+                        />
+                      </div>
+                    )}
+
+                    {selectedElement.isDashed !== undefined && (
+                      <label className="flex items-center gap-2 text-sm cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={selectedElement.isDashed || false}
+                          onChange={(e) => {
+                            updateElementProperty(selectedId, 'isDashed', e.target.checked);
+                            commitPropertyChange();
+                          }}
+                          className="w-4 h-4"
+                        />
+                        <span className="text-slate-700">Dashed Line</span>
+                      </label>
+                    )}
+
+                    {selectedElement.hasArrow !== undefined && (
+                      <label className="flex items-center gap-2 text-sm cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={selectedElement.hasArrow || false}
+                          onChange={(e) => {
+                            updateElementProperty(selectedId, 'hasArrow', e.target.checked);
+                            commitPropertyChange();
+                          }}
+                          className="w-4 h-4"
+                        />
+                        <span className="text-slate-700">Arrow Head</span>
+                      </label>
+                    )}
+                  </div>
+                </div>
+
+                {/* Actions */}
+                <div className="space-y-2 pt-4 border-t border-slate-200">
+                  <button
+                    onClick={duplicateSelectedElement}
+                    className="w-full py-2 px-4 bg-blue-50 text-blue-600 rounded-lg font-medium hover:bg-blue-100 transition border border-blue-200"
+                  >
+                    📋 Duplicate
+                  </button>
+                  <button
+                    onClick={deleteSelectedElement}
+                    className="w-full py-2 px-4 bg-red-50 text-red-600 rounded-lg font-medium hover:bg-red-100 transition border border-red-200"
+                  >
+                    🗑️ Delete
+                  </button>
+                </div>
+              </aside>
+            )}
+          </>
+        )}
+
+        {/* Code Tab */}
+        {activeTab === 'code' && (
+          <div className="flex-1 flex flex-col p-6 gap-4">
+            <div className="flex-1 bg-white rounded-xl shadow-lg p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-xl font-bold text-slate-800">TikZ Code</h2>
+                <button
+                  onClick={() => {
+                    navigator.clipboard.writeText(tikzCode);
+                    alert('Code copied to clipboard!');
+                  }}
+                  disabled={!tikzCode}
+                  className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  📋 Copy Code
+                </button>
+              </div>
+              <textarea
+                value={tikzCode}
+                onChange={(e) => setTikzCode(e.target.value)}
+                className="w-full h-full font-mono text-sm border border-slate-300 rounded-lg p-4 focus:outline-none focus:ring-2 focus:ring-blue-500"
+                placeholder="Generated TikZ code will appear here..."
+              />
+            </div>
+            {error && (
+              <div className="bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg">
+                <strong>Error:</strong> {error}
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* Preview Tab */}
+        {activeTab === 'preview' && (
+          <div className="flex-1 flex flex-col p-6 gap-4">
+            <div className="flex-1 bg-white rounded-xl shadow-lg p-6 overflow-auto">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-xl font-bold text-slate-800">TikZ Preview</h2>
+                <button
+                  onClick={renderPreview}
+                  disabled={!tikzCode || renderingPreview}
+                  className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition disabled:opacity-50 disabled:cursor-not-allowed"
+                >
+                  {renderingPreview ? '⏳ Rendering...' : '🖼️ Render Preview'}
+                </button>
+              </div>
+
+              {/* Progress Bar */}
+              {renderingPreview && (
+                <div className="mb-4">
+                  <div className="flex items-center justify-between mb-2">
+                    <span className="text-sm text-slate-600">{previewStatus}</span>
+                    <span className="text-sm font-semibold text-blue-600">{previewProgress}%</span>
+                  </div>
+                  <div className="w-full bg-slate-200 rounded-full h-2 overflow-hidden">
+                    <div
+                      className="bg-blue-500 h-2 transition-all duration-300 ease-out"
+                      style={{ width: `${previewProgress}%` }}
+                    />
+                  </div>
+                </div>
+              )}
+
+              {/* Preview Image */}
+              {previewImage ? (
+                <div className="flex items-center justify-center min-h-[400px] bg-slate-50 rounded-lg p-4">
+                  <img
+                    src={previewImage}
+                    alt="TikZ Preview"
+                    className="max-w-full max-h-full object-contain"
+                  />
+                </div>
+              ) : tikzCode ? (
+                <div className="flex flex-col items-center justify-center h-full text-slate-400 gap-4">
+                  <p>Click "Render Preview" to generate image</p>
+                  <p className="text-xs text-slate-500">Uses local pdflatex installation</p>
+                </div>
+              ) : (
+                <div className="flex items-center justify-center h-full text-slate-400">
+                  <p>Generate TikZ code first to see preview</p>
+                </div>
+              )}
+
+              {/* Error Display */}
+              {error && activeTab === 'preview' && (
+                <div className="mt-4 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg">
+                  <strong>Error:</strong> {error}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Graph Configuration Modal */}
+      {showGraphModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-2xl max-w-2xl w-full max-h-[90vh] overflow-y-auto">
+            <div className="p-6">
+              <div className="flex items-center justify-between mb-4">
+                <h2 className="text-2xl font-bold text-slate-800">📊 Function Graph Configuration</h2>
+                <button onClick={() => setShowGraphModal(false)} className="text-slate-400 hover:text-slate-600 text-2xl">✕</button>
+              </div>
+
+              <div className="space-y-4">
+                {/* Axis Ranges */}
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">X Min</label>
+                    <input type="number" value={graphConfig.xMin} onChange={(e) => setGraphConfig({...graphConfig, xMin: Number(e.target.value)})} className="w-full px-3 py-2 border border-slate-300 rounded-lg" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">X Max</label>
+                    <input type="number" value={graphConfig.xMax} onChange={(e) => setGraphConfig({...graphConfig, xMax: Number(e.target.value)})} className="w-full px-3 py-2 border border-slate-300 rounded-lg" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Y Min</label>
+                    <input type="number" value={graphConfig.yMin} onChange={(e) => setGraphConfig({...graphConfig, yMin: Number(e.target.value)})} className="w-full px-3 py-2 border border-slate-300 rounded-lg" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Y Max</label>
+                    <input type="number" value={graphConfig.yMax} onChange={(e) => setGraphConfig({...graphConfig, yMax: Number(e.target.value)})} className="w-full px-3 py-2 border border-slate-300 rounded-lg" />
+                  </div>
+                </div>
+
+                {/* Functions */}
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Functions (one per line, use x as variable)</label>
+                  <textarea value={graphConfig.functions.join('\n')} onChange={(e) => setGraphConfig({...graphConfig, functions: e.target.value.split('\n').filter(f => f.trim())})} rows="3" placeholder="sin(x)&#10;cos(x)&#10;x^2" className="w-full px-3 py-2 border border-slate-300 rounded-lg font-mono text-sm" />
+                  <p className="text-xs text-slate-500 mt-1">Examples: sin(x), cos(x), x^2, Math.sqrt(x), Math.exp(x)</p>
+                </div>
+
+                {/* Labels */}
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">X Label</label>
+                    <input type="text" value={graphConfig.xLabel} onChange={(e) => setGraphConfig({...graphConfig, xLabel: e.target.value})} className="w-full px-3 py-2 border border-slate-300 rounded-lg" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Y Label</label>
+                    <input type="text" value={graphConfig.yLabel} onChange={(e) => setGraphConfig({...graphConfig, yLabel: e.target.value})} className="w-full px-3 py-2 border border-slate-300 rounded-lg" />
+                  </div>
+                </div>
+
+                {/* Title */}
+                <div>
+                  <label className="block text-sm font-medium text-slate-700 mb-1">Graph Title (optional)</label>
+                  <input type="text" value={graphConfig.title} onChange={(e) => setGraphConfig({...graphConfig, title: e.target.value})} placeholder="My Function" className="w-full px-3 py-2 border border-slate-300 rounded-lg" />
+                </div>
+
+                {/* Options */}
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Width (px)</label>
+                    <input type="number" value={graphConfig.width} onChange={(e) => setGraphConfig({...graphConfig, width: Number(e.target.value)})} className="w-full px-3 py-2 border border-slate-300 rounded-lg" />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">Height (px)</label>
+                    <input type="number" value={graphConfig.height} onChange={(e) => setGraphConfig({...graphConfig, height: Number(e.target.value)})} className="w-full px-3 py-2 border border-slate-300 rounded-lg" />
+                  </div>
+                </div>
+
+                {/* Checkboxes */}
+                <div className="flex gap-6">
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" checked={graphConfig.showGrid} onChange={(e) => setGraphConfig({...graphConfig, showGrid: e.target.checked})} className="w-4 h-4" />
+                    <span className="text-sm text-slate-700">Show Grid</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" checked={graphConfig.showTicks} onChange={(e) => setGraphConfig({...graphConfig, showTicks: e.target.checked})} className="w-4 h-4" />
+                    <span className="text-sm text-slate-700">Show Ticks</span>
+                  </label>
+                  <label className="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" checked={graphConfig.showLegend} onChange={(e) => setGraphConfig({...graphConfig, showLegend: e.target.checked})} className="w-4 h-4" />
+                    <span className="text-sm text-slate-700">Show Legend</span>
+                  </label>
+                </div>
+
+                {/* Action Buttons */}
+                <div className="flex gap-3 pt-4">
+                  <button onClick={insertGraph} className="flex-1 py-3 bg-gradient-to-r from-purple-500 to-blue-500 text-white rounded-lg font-semibold hover:from-purple-600 hover:to-blue-600 transition">
+                    📊 Insert Graph
+                  </button>
+                  <button onClick={() => setShowGraphModal(false)} className="px-6 py-3 bg-slate-200 text-slate-700 rounded-lg font-semibold hover:bg-slate-300 transition">
+                    Cancel
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+

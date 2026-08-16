@@ -1,6 +1,6 @@
 # TikZ Generator
 
-A professional web application for creating LaTeX TikZ and CircuiTikZ diagrams using AI. Draw diagrams on a canvas and instantly convert them to clean, compile-ready TikZ code powered by Claude AI.
+A professional web application for creating LaTeX TikZ and CircuiTikZ diagrams. Draw diagrams on a canvas and instantly convert them to clean, compile-ready TikZ code. Diagram and function-plot generation is local and deterministic; upload an image and the server converts it to TikZ via a Gemini / OpenAI-compatible model.
 
 ## Features
 
@@ -19,22 +19,25 @@ A professional web application for creating LaTeX TikZ and CircuiTikZ diagrams u
   - Session persistence (saves last generated code)
   - Copy to clipboard
   - Download as .tex file
-- **AI-Powered Code Generation**: Uses Claude Sonnet 4 to convert canvas drawings to elegant TikZ code
-- **Live Preview**: Real-time TikZ rendering with TikZJax
+- **AI Image-to-TikZ**: Upload a screenshot or diagram and the server reproduces it as compile-ready TikZ (requires an API key)
+- **Live Preview**: Server-side LaTeX compilation (pdflatex) rendered to PNG with zoom controls
 
 ## Tech Stack
 
 - **Framework**: Next.js 16 (App Router)
-- **AI Model**: Claude Sonnet 4 via Anthropic API
+- **AI Model**: Configurable Gemini / OpenAI-compatible model (only used for image-to-TikZ conversion)
 - **Styling**: Tailwind CSS 4
-- **Rendering**: TikZJax for client-side LaTeX rendering
+- **Rendering**: Server-side pdflatex, converted to PNG via pdftoppm / sips / ImageMagick
 
 ## Getting Started
 
 ### Prerequisites
 
-- Node.js 18+ 
-- An Anthropic API key ([get one here](https://console.anthropic.com/))
+- Node.js 18+
+- An API key for image-to-TikZ conversion — Gemini (`GEMINI_API_KEY`) or any
+  OpenAI-compatible proxy. Diagram and graph generation work without a key.
+- A TeX distribution (`pdflatex`) plus a PDF→PNG converter (`pdftoppm`,
+  macOS `sips`, or ImageMagick) for the preview renderer.
 
 ### Installation
 
@@ -54,12 +57,17 @@ npm install
 cp .env.example .env.local
 ```
 
-Edit `.env.local` and add your Anthropic API key:
+Edit `.env.local` and add your API key:
 ```
-ANTHROPIC_API_KEY=your_api_key_here
+GEMINI_API_KEY=your_api_key_here
 
-# If using a third-party API provider, also add:
-ANTHROPIC_BASE_URL=https://your-third-party-api.com/v1
+# If using a proxy that bridges Anthropic, this key works too:
+# ANTHROPIC_API_KEY=your_api_key_here
+
+# Optional overrides for proxies / custom models:
+# GEMINI_AUTH_KEY=your_proxy_auth_key_here
+# GEMINI_BASE_URL=https://your-third-party-api.com/v1
+# GEMINI_MODEL=gemini-3.5-flash
 ```
 
 4. Run the development server:
@@ -73,7 +81,7 @@ npm run dev
 
 1. **Draw**: Use the tools in the left sidebar to draw your diagram on the canvas
 2. **Style**: Adjust colors, line width, and modifiers (dashed, arrows, fill)
-3. **Generate**: Click "Generate TikZ Code" to convert your drawing to LaTeX code
+3. **Generate**: Click "View Code" to convert your drawing to LaTeX code
 4. **Preview**: View the rendered result in the Code tab
 5. **Export**: Copy to clipboard or download as a .tex file
 
@@ -97,7 +105,9 @@ npm start
 
 ### Environment Variables
 
-Make sure to set `ANTHROPIC_API_KEY` or `CLAUDE_API_KEY` in your production environment.
+Make sure to set `GEMINI_API_KEY` (or `GEMINI_AUTH_KEY` / `ANTHROPIC_API_KEY` for
+proxies) in your production environment. The preview renderer requires a TeX
+distribution and a PDF→PNG converter on the server PATH.
 
 ### Vercel Deployment
 
@@ -107,12 +117,13 @@ This app is optimized for Vercel:
 vercel --prod
 ```
 
-Don't forget to add your `ANTHROPIC_API_KEY` in the Vercel project settings.
+Don't forget to add your `GEMINI_API_KEY` in the Vercel project settings.
 
 ## Architecture
 
-- `/app/page.js` - Main canvas component with drawing logic
-- `/app/api/generate-tikz/route.js` - API endpoint for Claude AI integration
+- `/app/page.js` - Main canvas component: drawing, editing, local deterministic TikZ generation, and graphing mode
+- `/app/api/generate-tikz/route.js` - API endpoint for AI image-to-TikZ conversion (OpenAI-compatible; Gemini or proxy)
+- `/app/api/render-tikz/route.js` - Compiles TikZ with pdflatex and converts the PDF to a PNG preview
 - `/app/layout.js` - Root layout with metadata and viewport configuration
 
 ## Contributing
@@ -125,7 +136,4 @@ MIT
 
 ## Acknowledgments
 
-- Built with [Claude AI](https://www.anthropic.com/claude) by Anthropic
-- TikZ rendering by [TikZJax](https://tikzjax.com/)
 - Inspired by [tikzmaker.com](https://tikzmaker.com/)
-

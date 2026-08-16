@@ -1,0 +1,2337 @@
+"use client";
+import { useRef, useState, useEffect, useMemo, useCallback } from "react";
+
+/* =========================================================================
+ * SHAPE REGISTRY
+ * Each entry describes a placeable shape for the Visio-style left library.
+ * `kind` matches the element `type` used throughout the canvas engine.
+ * `glyph` is a small inline SVG preview shown in the stencil grid.
+ * `category` groups shapes into tabs in the left panel.
+ * ========================================================================= */
+
+const Glyph = ({ children }) => (
+  <svg viewBox="0 0 40 28" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinejoin="round" strokeLinecap="round">
+    {children}
+  </svg>
+);
+
+const SHAPES = [
+  // Basic
+  { kind: "rect", label: "Rectangle", category: "Basic", glyph: <rect x="5" y="5" width="30" height="18" rx="1" /> },
+  { kind: "rounded-rect", label: "Round Rect", category: "Basic", glyph: <rect x="5" y="5" width="30" height="18" rx="5" /> },
+  { kind: "circle", label: "Circle", category: "Basic", glyph: <circle cx="20" cy="14" r="10" /> },
+  { kind: "ellipse", label: "Ellipse", category: "Basic", glyph: <ellipse cx="20" cy="14" rx="13" ry="8" /> },
+  { kind: "triangle", label: "Triangle", category: "Basic", glyph: <path d="M20 4 L35 23 L5 23 Z" /> },
+  { kind: "line", label: "Line", category: "Basic", glyph: <path d="M5 22 L35 6" /> },
+  { kind: "arrow", label: "Arrow", category: "Basic", glyph: <><path d="M5 22 L30 8" /><path d="M30 8 L24 9 M30 8 L29 14" /></> },
+  { kind: "text", label: "Text", category: "Basic", glyph: <><path d="M8 7 H32" /><path d="M20 7 V22" /></> },
+
+  // Polygons
+  { kind: "parallelogram", label: "Parallelogram", category: "Polygons", glyph: <path d="M9 5 H35 L31 23 H5 Z" /> },
+  { kind: "rhombus", label: "Diamond", category: "Polygons", glyph: <path d="M20 3 L37 14 L20 25 L3 14 Z" /> },
+  { kind: "pentagon", label: "Pentagon", category: "Polygons", glyph: <path d="M20 3 L37 15 L30 25 L10 25 L3 15 Z" /> },
+  { kind: "hexagon", label: "Hexagon", category: "Polygons", glyph: <path d="M11 4 H29 L38 14 L29 24 H11 L2 14 Z" /> },
+  { kind: "star", label: "Star", category: "Polygons", glyph: <path d="M20 3 L24 11 L33 12 L26 18 L28 26 L20 22 L12 26 L14 18 L7 12 L16 11 Z" /> },
+
+  // Flowchart
+  { kind: "process", label: "Process", category: "Flowchart", glyph: <rect x="5" y="6" width="30" height="16" rx="1" /> },
+  { kind: "decision", label: "Decision", category: "Flowchart", glyph: <path d="M20 4 L36 14 L20 24 L4 14 Z" /> },
+  { kind: "terminator", label: "Start/End", category: "Flowchart", glyph: <rect x="4" y="7" width="32" height="14" rx="7" /> },
+  { kind: "document", label: "Document", category: "Flowchart", glyph: <path d="M5 5 H35 V21 Q20 27 5 21 Z" /> },
+  { kind: "connector", label: "Connector", category: "Flowchart", glyph: <circle cx="20" cy="14" r="6" /> },
+
+  // Circuit
+  { kind: "resistor", label: "Resistor", category: "Circuit", glyph: <><path d="M3 14 H10" /><path d="M10 14 L12 9 L16 19 L20 9 L24 19 L28 9 L30 14" /><path d="M30 14 H37" /></> },
+  { kind: "capacitor", label: "Capacitor", category: "Circuit", glyph: <><path d="M3 14 H17" /><path d="M17 6 V22" /><path d="M23 6 V22" /><path d="M23 14 H37" /></> },
+  { kind: "inductor", label: "Inductor", category: "Circuit", glyph: <><path d="M3 14 H10" /><path d="M10 14 A4 4 0 0 1 18 14 A4 4 0 0 1 26 14 A4 4 0 0 1 34 14" /><path d="M34 14 H37" /></> },
+  { kind: "battery", label: "Battery", category: "Circuit", glyph: <><path d="M3 14 H16" /><path d="M16 6 V22" /><path d="M20 9 V19" /><path d="M24 6 V22" /><path d="M28 9 V19" /><path d="M28 14 H37" /></> },
+  { kind: "diode", label: "Diode", category: "Circuit", glyph: <><path d="M3 14 H14" /><path d="M14 7 L14 21 L26 14 Z" /><path d="M26 7 L26 21" /><path d="M26 14 H37" /></> },
+  { kind: "ground", label: "Ground", category: "Circuit", glyph: <><path d="M20 4 V14" /><path d="M10 14 H30" /><path d="M13 19 H27" /><path d="M16 24 H24" /></> },
+  { kind: "voltmeter", label: "Voltmeter", category: "Circuit", glyph: <><circle cx="20" cy="14" r="9" /><path d="M16 10 L18 18 L24 12" /></> },
+  { kind: "ammeter", label: "Ammeter", category: "Circuit", glyph: <><circle cx="20" cy="14" r="9" /><path d="M14 14 H26" /></> },
+
+  // Logic Gates
+  { kind: "and-gate", label: "AND", category: "Logic Gates", glyph: <><path d="M6 6 H18 A8 8 0 0 1 18 22 H6 Z" /><path d="M2 10 H6 M2 18 H6 M26 14 H32" /></> },
+  { kind: "or-gate", label: "OR", category: "Logic Gates", glyph: <><path d="M5 6 Q14 14 5 22 Q16 22 26 14 Q16 6 5 6 Z" /><path d="M2 10 H8 M2 18 H8 M26 14 H32" /></> },
+  { kind: "not-gate", label: "NOT", category: "Logic Gates", glyph: <><path d="M6 6 L24 14 L6 22 Z" /><circle cx="27" cy="14" r="2" /><path d="M2 14 H6 M29 14 H34" /></> },
+  { kind: "nand-gate", label: "NAND", category: "Logic Gates", glyph: <><path d="M6 6 H16 A7 7 0 0 1 16 22 H6 Z" /><circle cx="26" cy="14" r="2" /><path d="M2 10 H6 M2 18 H6 M28 14 H34" /></> },
+  { kind: "nor-gate", label: "NOR", category: "Logic Gates", glyph: <><path d="M5 6 Q12 14 5 22 Q14 22 22 14 Q14 6 5 6 Z" /><circle cx="25" cy="14" r="2" /><path d="M2 10 H8 M2 18 H8 M27 14 H34" /></> },
+  { kind: "xor-gate", label: "XOR", category: "Logic Gates", glyph: <><path d="M4 6 Q11 14 4 22" /><path d="M7 6 Q16 14 7 22 Q17 22 25 14 Q17 6 7 6 Z" /><path d="M2 10 H6 M2 18 H6 M27 14 H34" /></> },
+];
+
+const CATEGORIES = ["Basic", "Polygons", "Flowchart", "Circuit", "Logic Gates"];
+
+/* Default geometry when placing a shape via click-to-place. */
+const DEFAULT_GEOMETRY = {
+  rect: { width: 120, height: 80 },
+  "rounded-rect": { width: 120, height: 80, cornerRadius: 12 },
+  circle: { radius: 50 },
+  ellipse: { rx: 70, ry: 45 },
+  triangle: { width: 110, height: 95 },
+  line: { dx: 120, dy: 0 },
+  arrow: { dx: 120, dy: 0 },
+  text: { width: 100, height: 30 },
+  parallelogram: { width: 120, height: 70 },
+  rhombus: { width: 110, height: 80 },
+  pentagon: { width: 110, height: 100 },
+  hexagon: { width: 110, height: 95 },
+  star: { width: 110, height: 110, innerRatio: 0.42 },
+  process: { width: 120, height: 60 },
+  decision: { width: 120, height: 80 },
+  terminator: { width: 120, height: 50 },
+  document: { width: 130, height: 80 },
+  connector: { radius: 25 },
+  resistor: { dx: 120, dy: 0 },
+  capacitor: { dx: 80, dy: 0 },
+  inductor: { dx: 120, dy: 0 },
+  battery: { dx: 80, dy: 0 },
+  diode: { dx: 100, dy: 0 },
+  ground: {},
+  voltmeter: { radius: 30 },
+  ammeter: { radius: 30 },
+  "and-gate": { width: 80, height: 60 },
+  "or-gate": { width: 80, height: 60 },
+  "not-gate": { width: 80, height: 60 },
+  "nand-gate": { width: 90, height: 60 },
+  "nor-gate": { width: 90, height: 60 },
+  "xor-gate": { width: 90, height: 60 },
+};
+
+const CATEGORY_ICON = {
+  Basic: "▦",
+  Polygons: "◆",
+  Flowchart: "⤳",
+  Circuit: "⚡",
+  "Logic Gates": "⊲",
+};
+
+const COLOR_PRESETS = [
+  "#000000", "#ffffff", "#ef4444", "#f97316", "#eab308",
+  "#22c55e", "#06b6d4", "#3b82f6", "#8b5cf6", "#ec4899",
+  "#64748b", "#475569", "#1e293b", "#fde68a", "#bbf7d0",
+];
+
+const PLACEHOLDER_TOOL = "__place__";
+
+/* =========================================================================
+ * SAFE MATH PARSER (tokenizer + shunting-yard + RPN eval)
+ * Used by the Desmos-style graphing mode so users can type `sin(x) + 0.5*x^2`
+ * without relying on eval(). Supports + - * / ^, parentheses, unary minus,
+ * implicit multiplication (2x, 3sin(x)), and common functions / constants.
+ * ========================================================================= */
+
+const MATH_FUNCS = {
+  sin: Math.sin, cos: Math.cos, tan: Math.tan,
+  asin: Math.asin, acos: Math.acos, atan: Math.atan,
+  sinh: Math.sinh, cosh: Math.cosh, tanh: Math.tanh,
+  sqrt: Math.sqrt, cbrt: Math.cbrt, abs: Math.abs,
+  exp: Math.exp, ln: Math.log, log: Math.log10, log10: Math.log10, log2: Math.log2,
+  floor: Math.floor, ceil: Math.ceil, round: Math.round,
+  sign: Math.sign,
+};
+const MATH_CONSTS = { pi: Math.PI, e: Math.E, tau: Math.PI * 2 };
+
+function tokenizeExpr(expr) {
+  const tokens = [];
+  let i = 0;
+  const isDigit = (c) => /[0-9.]/.test(c);
+  const isAlpha = (c) => /[a-zA-Z]/.test(c);
+  while (i < expr.length) {
+    const c = expr[i];
+    if (c === " " || c === "\t") { i++; continue; }
+    if (isDigit(c)) {
+      let num = "";
+      while (i < expr.length && isDigit(expr[i])) num += expr[i++];
+      tokens.push({ t: "num", v: parseFloat(num) });
+      continue;
+    }
+    if (isAlpha(c)) {
+      let name = "";
+      while (i < expr.length && isAlpha(expr[i])) name += expr[i++];
+      tokens.push({ t: "name", v: name });
+      continue;
+    }
+    if ("+-*/^()".includes(c)) { tokens.push({ t: "op", v: c }); i++; continue; }
+    throw new Error(`Unexpected character '${c}'`);
+  }
+  return tokens;
+}
+
+const PREC = { "+": 1, "-": 1, "*": 2, "/": 2, "^": 3, u: 4 };
+const RIGHT = { "^": true, u: true };
+
+function toRPN(tokens) {
+  const out = [];
+  const ops = [];
+  let prev = null;
+  for (const tk of tokens) {
+    if (tk.t === "num" || tk.t === "name") {
+      out.push(tk);
+    } else if (tk.t === "op") {
+      if (tk.v === "(") {
+        ops.push(tk);
+      } else if (tk.v === ")") {
+        while (ops.length && ops[ops.length - 1].v !== "(") out.push({ t: "op", v: ops.pop().v });
+        if (!ops.length) throw new Error("Mismatched parentheses");
+        ops.pop(); // pop "("
+      } else {
+        // unary minus detection
+        let op = tk.v;
+        const isUnary = (op === "-") && (prev === null || prev.t === "op" && prev.v !== ")");
+        if (isUnary) op = "u";
+        while (ops.length) {
+          const top = ops[ops.length - 1];
+          if (top.v === "(") break;
+          const topOp = top.v === "-" && false ? top.v : top.v; // (unary already encoded)
+          if (PREC[topOp] !== undefined && (PREC[op] !== undefined)) {
+            if ((!RIGHT[op] && PREC[op] <= PREC[topOp]) || (RIGHT[op] && PREC[op] < PREC[topOp])) {
+              out.push({ t: "op", v: ops.pop().v });
+              continue;
+            }
+          }
+          break;
+        }
+        ops.push({ t: "op", v: op });
+      }
+    }
+    prev = tk;
+  }
+  while (ops.length) {
+    const o = ops.pop();
+    if (o.v === "(") throw new Error("Mismatched parentheses");
+    out.push({ t: "op", v: o.v });
+  }
+  return out;
+}
+
+function evalRPN(rpn, x) {
+  const st = [];
+  for (const tk of rpn) {
+    if (tk.t === "num") { st.push(tk.v); continue; }
+    if (tk.t === "name") {
+      if (tk.v === "x") { st.push(x); continue; }
+      if (MATH_CONSTS[tk.v] !== undefined) { st.push(MATH_CONSTS[tk.v]); continue; }
+      // function call — next token must be an operator applied to its arg already on stack
+      if (MATH_FUNCS[tk.v]) { st.push({ fn: MATH_FUNCS[tk.v] }); continue; }
+      throw new Error(`Unknown identifier '${tk.v}'`);
+    }
+    if (tk.t === "op") {
+      if (tk.v === "u") { const a = resolve(st); st.push(-a); continue; }
+      if (tk.v === "^") { const b = resolve(st); const a = resolve(st); st.push(Math.pow(a, b)); continue; }
+      const b = resolve(st); const a = resolve(st);
+      if (tk.v === "+") st.push(a + b);
+      else if (tk.v === "-") st.push(a - b);
+      else if (tk.v === "*") st.push(a * b);
+      else if (tk.v === "/") st.push(a / b);
+    }
+  }
+  // resolve any pending function tokens
+  while (st.length) { const v = st.pop(); if (typeof v === "number") return v; }
+  return NaN;
+
+  function resolve(stack) {
+    const v = stack.pop();
+    if (v && typeof v === "object" && v.fn) return v.fn(resolve(stack));
+    return v;
+  }
+}
+
+// Insert implicit multiplication then compile to a reusable function.
+function compileFn(expr) {
+  let tokens = tokenizeExpr(expr);
+  // implicit multiplication: number/name followed by name/(
+  const inserted = [];
+  for (let i = 0; i < tokens.length; i++) {
+    inserted.push(tokens[i]);
+    const cur = tokens[i];
+    const nxt = tokens[i + 1];
+    if (!nxt) continue;
+    const curEnd = cur.t === "num" || cur.t === "name" || (cur.t === "op" && cur.v === ")");
+    const nxtStart = nxt.t === "name" || (nxt.t === "op" && nxt.v === "(");
+    if (curEnd && nxtStart && !(cur.t === "name" && MATH_FUNCS[cur.v])) {
+      inserted.push({ t: "op", v: "*" });
+    }
+  }
+  const rpn = toRPN(inserted);
+  return (x) => evalRPN(rpn, x);
+}
+
+/* Tiny classnames join helper */
+const cx = (...xs) => xs.filter(Boolean).join(" ");
+
+/* =========================================================================
+ * MAIN APP COMPONENT
+ * ========================================================================= */
+export default function TikzApp() {
+  /* ---------- App mode (Diagram vs Graphing) ---------- */
+  const [mode, setMode] = useState("diagram"); // "diagram" | "graph"
+
+  /* ---------- Left shape library ---------- */
+  const [activeCategory, setActiveCategory] = useState("Basic");
+  const [shapeSearch, setShapeSearch] = useState("");
+
+  /* ---------- Tool / placement ---------- */
+  const [tool, setTool] = useState("select"); // select | eraser | pen | PLACEHOLDER_TOOL
+  const [pendingShape, setPendingShape] = useState(null); // kind waiting to be placed
+
+  /* ---------- Style defaults for new elements ---------- */
+  const [strokeColor, setStrokeColor] = useState("#1f2937");
+  const [lineWidth, setLineWidth] = useState(2);
+  const [isDashed, setIsDashed] = useState(false);
+  const [hasArrow, setHasArrow] = useState(false);
+  const [fillColor, setFillColor] = useState("transparent");
+  const [textLabel, setTextLabel] = useState("Label");
+  const [textFontSize, setTextFontSize] = useState(20);
+  const [textFontFamily, setTextFontFamily] = useState("sans-serif");
+  const [textIsLatex, setTextIsLatex] = useState(false);
+
+  /* ---------- Elements / history (diagram mode) ---------- */
+  const [elements, setElements] = useState([]);
+  const elementIdCounter = useRef(0);
+  const [historyStack, setHistoryStack] = useState([[]]);
+  const [historyIndex, setHistoryIndex] = useState(0);
+
+  /* ---------- Selection ---------- */
+  const [selectedId, setSelectedId] = useState(null);
+  const [hoveredId, setHoveredId] = useState(null);
+
+  /* ---------- Dragging / drawing ---------- */
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragStartPos, setDragStartPos] = useState({ x: 0, y: 0 });
+  const [dragElementStart, setDragElementStart] = useState(null);
+  const [resizeHandle, setResizeHandle] = useState(null); // 'nw','ne','sw','se','n','s','e','w'
+  const resizeStartRef = useRef(null);
+  const [isDrawing, setIsDrawing] = useState(false);
+  const [startPos, setStartPos] = useState({ x: 0, y: 0 });
+  const [currentShape, setCurrentShape] = useState(null);
+  const tempPointsRef = useRef([]);
+
+  /* ---------- Canvas / viewport ---------- */
+  const canvasRef = useRef(null);
+  const containerRef = useRef(null);
+  const graphCanvasRef = useRef(null);
+  const graphContainerRef = useRef(null);
+  const [zoom, setZoom] = useState(1);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const [showGrid, setShowGrid] = useState(true);
+  const [snapToGrid, setSnapToGrid] = useState(false);
+  const gridSize = 20;
+
+  /* ---------- Project ---------- */
+  const [projectName, setProjectName] = useState("Untitled Diagram");
+
+  /* ---------- AI pipeline (Code + Preview dock) ---------- */
+  const [tikzCode, setTikzCode] = useState("");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [previewImage, setPreviewImage] = useState(null);
+  const [renderingPreview, setRenderingPreview] = useState(false);
+  const [previewProgress, setPreviewProgress] = useState(0);
+  const [previewStatus, setPreviewStatus] = useState("");
+  const [outputOpen, setOutputOpen] = useState(false); // bottom dock visibility
+  const [outputTab, setOutputTab] = useState("code"); // "code" | "preview"
+  const [outputHeight, setOutputHeight] = useState(280);
+  const resizingOutputRef = useRef(false);
+
+  /* ---------- Resizable side panels ---------- */
+  const [leftWidth, setLeftWidth] = useState(232);
+  const resizingLeftRef = useRef(false);
+  const [rightWidth, setRightWidth] = useState(280);
+  const resizingRightRef = useRef(false);
+
+  /* ---------- Graphing mode (Desmos-style) ---------- */
+  const [functions, setFunctions] = useState([
+    { id: "f1", expr: "sin(x)", color: "#2563eb", visible: true },
+    { id: "f2", expr: "0.3*x^2 - 2", color: "#ef4444", visible: true },
+  ]);
+  const [fnIdCounter, setFnIdCounter] = useState(3);
+  const [xRange, setXRange] = useState([-10, 10]);
+  const [yRange, setYRange] = useState([-6, 6]);
+  const [graphHoverX, setGraphHoverX] = useState(null);
+  const [graphConfig, setGraphConfig] = useState({
+    title: "",
+    xLabel: "x",
+    yLabel: "y",
+    showMajorTicks: true,
+    showMinorTicks: true,
+    showLegend: true,
+    legendPosition: "north east",
+    showDataLabels: false,
+    gridStyle: "both", // none | major | both
+  });
+
+  const selectedElement = selectedId ? elements.find((e) => e.id === selectedId) : null;
+
+  /* ---------- ID generation & history ---------- */
+  const generateId = () => `elem_${elementIdCounter.current++}`;
+
+  const saveToHistory = (newElements) => {
+    const newHistory = historyStack.slice(0, historyIndex + 1);
+    newHistory.push(newElements);
+    if (newHistory.length > 30) newHistory.shift();
+    else setHistoryIndex(historyIndex + 1);
+    setHistoryStack(newHistory);
+  };
+
+  const handleUndo = () => {
+    if (historyIndex > 0) {
+      const newIndex = historyIndex - 1;
+      setHistoryIndex(newIndex);
+      setElements(historyStack[newIndex]);
+      setSelectedId(null);
+    }
+  };
+  const handleRedo = () => {
+    if (historyIndex < historyStack.length - 1) {
+      const newIndex = historyIndex + 1;
+      setHistoryIndex(newIndex);
+      setElements(historyStack[newIndex]);
+      setSelectedId(null);
+    }
+  };
+
+  /* ---------- Load saved state ---------- */
+  useEffect(() => {
+    const saved = localStorage.getItem("tikz-last-code");
+    // eslint-disable-next-line react-hooks/set-state-in-effect
+    if (saved) setTikzCode(saved);
+    const savedProject = localStorage.getItem("tikz-autosave");
+    if (savedProject) {
+      try {
+        const data = JSON.parse(savedProject);
+        if (data.elements && confirm(`Recover autosaved project "${data.name}"?`)) {
+          setProjectName(data.name);
+          setElements(data.elements);
+          setZoom(data.zoom || 1);
+          setPan(data.pan || { x: 0, y: 0 });
+          setShowGrid(data.showGrid ?? true);
+        }
+      } catch {}
+    }
+  }, []);
+
+  useEffect(() => {
+    if (tikzCode) localStorage.setItem("tikz-last-code", tikzCode);
+  }, [tikzCode]);
+
+  useEffect(() => {
+    const timer = setInterval(() => {
+      localStorage.setItem(
+        "tikz-autosave",
+        JSON.stringify({ name: projectName, elements, zoom, pan, showGrid, timestamp: Date.now() })
+      );
+    }, 30000);
+    return () => clearInterval(timer);
+  }, [projectName, elements, zoom, pan, showGrid]);
+
+  // Derived undo/redo flags (no effect needed)
+  const canUndo = historyIndex > 0;
+  const canRedo = historyIndex < historyStack.length - 1;
+
+  // (canvas render-trigger effects declared after renderDiagram, below)
+
+  // Resize diagram canvas to fill its container
+  useEffect(() => {
+    if (mode !== "diagram") return;
+    const resize = () => {
+      const c = canvasRef.current, wrap = containerRef.current;
+      if (!c || !wrap) return;
+      c.width = wrap.clientWidth;
+      c.height = wrap.clientHeight;
+    };
+    const t = setTimeout(resize, 60);
+    window.addEventListener("resize", resize);
+    return () => { clearTimeout(t); window.removeEventListener("resize", resize); };
+  }, [mode]);
+
+  // (graph-canvas resize effect moved below renderGraph declaration)
+
+  // Panel resizing drag handlers
+  useEffect(() => {
+    const onMove = (e) => {
+      if (resizingLeftRef.current) {
+        const w = Math.min(420, Math.max(180, e.clientX));
+        setLeftWidth(w);
+      } else if (resizingRightRef.current) {
+        const w = Math.min(460, Math.max(220, window.innerWidth - e.clientX));
+        setRightWidth(w);
+      } else if (resizingOutputRef.current) {
+        const h = Math.min(window.innerHeight - 200, Math.max(140, window.innerHeight - e.clientY));
+        setOutputHeight(h);
+      }
+    };
+    const onUp = () => {
+      resizingLeftRef.current = false;
+      resizingRightRef.current = false;
+      resizingOutputRef.current = false;
+      document.body.style.cursor = "";
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+    };
+  }, []);
+
+  /* ---------- Element CRUD ---------- */
+  const deleteSelected = () => {
+    if (!selectedId) return;
+    const next = elements.filter((el) => el.id !== selectedId);
+    setElements(next); saveToHistory(next); setSelectedId(null);
+  };
+
+  const duplicateSelected = () => {
+    if (!selectedId) return;
+    const el = elements.find((e) => e.id === selectedId);
+    if (!el) return;
+    const clone = {
+      ...el, id: generateId(),
+      x: (el.x ?? 0) + 20, y: (el.y ?? 0) + 20,
+      x1: el.x1 != null ? el.x1 + 20 : undefined,
+      y1: el.y1 != null ? el.y1 + 20 : undefined,
+      x2: el.x2 != null ? el.x2 + 20 : undefined,
+      y2: el.y2 != null ? el.y2 + 20 : undefined,
+      points: el.points ? el.points.map((p) => ({ x: p.x + 20, y: p.y + 20 })) : undefined,
+      created: Date.now(), modified: Date.now(),
+    };
+    const next = [...elements, clone];
+    setElements(next); saveToHistory(next); setSelectedId(clone.id);
+  };
+
+  const updateElementProperty = (id, key, value) => {
+    setElements((prev) => prev.map((el) => (el.id === id ? { ...el, [key]: value, modified: Date.now() } : el)));
+  };
+  const commitHistory = () => saveToHistory(elements);
+
+  const clearAll = () => {
+    if (elements.length && confirm("Clear all elements?")) {
+      setElements([]); saveToHistory([]); setSelectedId(null);
+    }
+  };
+
+  // Keyboard shortcuts (declared after handlers it references)
+  useEffect(() => {
+    const onKey = (e) => {
+      const tag = e.target.tagName;
+      const inField = tag === "INPUT" || tag === "TEXTAREA";
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "z" && !e.shiftKey) {
+        e.preventDefault(); handleUndo();
+      } else if (((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "y") ||
+                 ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === "z")) {
+        e.preventDefault(); handleRedo();
+      } else if ((e.key === "Delete" || e.key === "Backspace") && !inField) {
+        e.preventDefault(); deleteSelected();
+      } else if (e.key === "Escape") {
+        setSelectedId(null); setPendingShape(null); setTool("select");
+      } else if (!inField && mode === "diagram") {
+        if (e.key.toLowerCase() === "v") { setTool("select"); setPendingShape(null); }
+        else if (e.key.toLowerCase() === "p") { setTool("pen"); setPendingShape(null); }
+        else if (e.key.toLowerCase() === "e") { setTool("eraser"); setPendingShape(null); }
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [historyIndex, historyStack, selectedId, mode, elements]);
+
+  /* ---------- Viewport ---------- */
+  const zoomIn = () => setZoom((z) => Math.min(z * 1.2, 5));
+  const zoomOut = () => setZoom((z) => Math.max(z / 1.2, 0.15));
+  const zoomReset = () => { setZoom(1); setPan({ x: 0, y: 0 }); };
+
+  const snap = (v) => (snapToGrid ? Math.round(v / gridSize) * gridSize : v);
+  const screenToCanvas = (sx, sy) => {
+    const c = canvasRef.current; if (!c) return { x: 0, y: 0 };
+    const r = c.getBoundingClientRect();
+    return { x: snap((sx - r.left - pan.x) / zoom), y: snap((sy - r.top - pan.y) / zoom) };
+  };
+  const getCoords = (e) => {
+    const cx = e.clientX ?? e.touches?.[0]?.clientX ?? 0;
+    const cy = e.clientY ?? e.touches?.[0]?.clientY ?? 0;
+    return { ...screenToCanvas(cx, cy), pressure: e.pressure ?? 0.5 };
+  };
+
+  const elementAt = (x, y) => {
+    for (let i = elements.length - 1; i >= 0; i--) {
+      if (isPointInElement(x, y, elements[i])) return elements[i].id;
+    }
+    return null;
+  };
+
+  // Detect if a point hits a resize handle on the selected element.
+  // Returns handle id ('nw','ne','sw','se','n','s','e','w') or null.
+  const handleAt = (x, y, el) => {
+    if (!el) return null;
+    const b = getElementBounds(el, 0);
+    const hs = 8 / zoom; // handle size in canvas units
+    // rotation handle (above top-center)
+    const rotY = b.y - 22 / zoom;
+    const midX = b.x + b.width / 2;
+    if (Math.hypot(x - midX, y - rotY) <= hs) return "rotate";
+    const corners = {
+      nw: [b.x, b.y], ne: [b.x + b.width, b.y],
+      se: [b.x + b.width, b.y + b.height], sw: [b.x, b.y + b.height],
+    };
+    for (const [id, [hx, hy]] of Object.entries(corners)) {
+      if (Math.abs(x - hx) <= hs && Math.abs(y - hy) <= hs) return id;
+    }
+    if (Math.abs(x - midX) <= hs && Math.abs(y - b.y) <= hs) return "n";
+    if (Math.abs(x - midX) <= hs && Math.abs(y - (b.y + b.height)) <= hs) return "s";
+    if (Math.abs(x - b.x) <= hs && Math.abs(y - (b.y + b.height / 2)) <= hs) return "w";
+    if (Math.abs(x - (b.x + b.width)) <= hs && Math.abs(y - (b.y + b.height / 2)) <= hs) return "e";
+    return null;
+  };
+
+  // Whether an element type supports box resizing (has width/height).
+  const isResizable = (el) =>
+    el && (BOX_KINDS.has(el.type) || el.type === "ellipse" || el.type === "circle" || CIRC_KINDS.has(el.type));
+
+  /* ---------- Click-to-place from the shape library ---------- */
+  const requestPlace = (kind) => {
+    setTool(PLACEHOLDER_TOOL);
+    setPendingShape(kind);
+    setSelectedId(null);
+  };
+
+  const placeShapeAt = (x, y) => {
+    const kind = pendingShape;
+    const g = DEFAULT_GEOMETRY[kind] || {};
+    const base = {
+      id: generateId(),
+      type: kind,
+      strokeColor, lineWidth, fillColor, isDashed,
+      created: Date.now(), modified: Date.now(),
+    };
+    let el;
+    if (LINE_KINDS.has(kind) || kind === "line" || kind === "arrow") {
+      el = { ...base, x1: x, y1: y, x2: x + (g.dx || 100), y2: y + (g.dy || 0), hasArrow: kind === "arrow" };
+    } else if (CIRC_KINDS.has(kind) || kind === "circle") {
+      el = { ...base, x, y, radius: g.radius || 40 };
+    } else if (kind === "ellipse") {
+      el = { ...base, x, y, rx: g.rx || 60, ry: g.ry || 40 };
+    } else if (kind === "text") {
+      el = { ...base, x, y, text: textLabel, fontSize: textFontSize, fontFamily: textFontFamily, isLatex: textIsLatex };
+    } else if (kind === "ground") {
+      el = { ...base, x, y };
+    } else {
+      // box-like (rect, rounded-rect, triangle, rhombus, pentagon, hexagon, star, decision, process, terminator, document, gates, parallelogram)
+      el = { ...base, x, y, width: g.width || 100, height: g.height || 70, ...(g.cornerRadius ? { cornerRadius: g.cornerRadius } : {}) };
+    }
+    const next = [...elements, el];
+    setElements(next); saveToHistory(next);
+    setSelectedId(el.id);
+    // keep the same shape armed for rapid placement? No — return to select after place
+    setPendingShape(null); setTool("select");
+  };
+
+  /* ---------- Pointer handlers (diagram canvas) ---------- */
+  const onPointerDown = (e) => {
+    const { x, y, pressure } = getCoords(e);
+
+    if (tool === "eraser") {
+      const id = elementAt(x, y);
+      if (id) {
+        const next = elements.filter((el) => el.id !== id);
+        setElements(next); saveToHistory(next);
+        if (id === selectedId) setSelectedId(null);
+      }
+      return;
+    }
+
+    if (tool === PLACEHOLDER_TOOL && pendingShape) {
+      placeShapeAt(x, y);
+      return;
+    }
+
+    if (tool === "select") {
+      // 1. Check resize handle hit on currently selected element
+      if (selectedId) {
+        const sel = elements.find((e) => e.id === selectedId);
+        if (isResizable(sel)) {
+          const h = handleAt(x, y, sel);
+          if (h) {
+            setResizeHandle(h);
+            setDragStartPos({ x, y });
+            resizeStartRef.current = {
+              x: sel.x, y: sel.y, width: sel.width, height: sel.height,
+              rx: sel.rx, ry: sel.ry, radius: sel.radius, x1: sel.x1, y1: sel.y1, x2: sel.x2, y2: sel.y2,
+              rotation: sel.rotation || 0,
+            };
+            return;
+          }
+        }
+      }
+      // 2. Otherwise, select / start move drag
+      const id = elementAt(x, y);
+      if (id) {
+        setSelectedId(id);
+        setIsDragging(true);
+        setDragStartPos({ x, y });
+        const el = elements.find((e) => e.id === id);
+        if (el) {
+          setDragElementStart({
+            x: el.x, y: el.y, x1: el.x1, y1: el.y1, x2: el.x2, y2: el.y2,
+            points: el.points ? el.points.map((p) => ({ ...p })) : null,
+          });
+        }
+      } else setSelectedId(null);
+      return;
+    }
+
+    if (tool === "text") {
+      const el = {
+        id: generateId(), type: "text", x, y, text: textLabel,
+        fontSize: textFontSize, fontFamily: textFontFamily, isLatex: textIsLatex,
+        strokeColor, created: Date.now(), modified: Date.now(),
+      };
+      const next = [...elements, el];
+      setElements(next); saveToHistory(next); setSelectedId(el.id);
+      return;
+    }
+
+    if (tool === "ground") {
+      const el = {
+        id: generateId(), type: "ground", x, y, strokeColor, lineWidth,
+        created: Date.now(), modified: Date.now(),
+      };
+      const next = [...elements, el];
+      setElements(next); saveToHistory(next); setSelectedId(el.id);
+      return;
+    }
+
+    // pen / shape drag draw
+    setIsDrawing(true);
+    setStartPos({ x, y });
+    tempPointsRef.current = [];
+    if (tool === "pen") {
+      tempPointsRef.current = [{ x, y }];
+      setCurrentShape({ type: "pen", points: [{ x, y }], strokeColor, lineWidth: lineWidth * (0.5 + pressure), isDashed });
+    }
+  };
+
+  const onPointerMove = (e) => {
+    const { x, y, pressure } = getCoords(e);
+
+    if (tool === "eraser" && !isDrawing) { setHoveredId(elementAt(x, y)); return; }
+
+    // Resize / rotate dragging
+    if (tool === "select" && resizeHandle && resizeStartRef.current) {
+      const s = resizeStartRef.current;
+      const h = resizeHandle;
+
+      if (h === "rotate") {
+        const el = elements.find((e) => e.id === selectedId);
+        if (el) {
+          const b = getElementBounds(el, 0);
+          const cx = b.x + b.width / 2, cy = b.y + b.height / 2;
+          let angle = Math.atan2(y - cy, x - cx) * 180 / Math.PI + 90;
+          if (e.shiftKey) angle = Math.round(angle / 15) * 15; // snap to 15° with Shift
+          updateElementProperty(selectedId, "rotation", Math.round(angle));
+        }
+        return;
+      }
+
+      const dx = x - dragStartPos.x, dy = y - dragStartPos.y;
+      setElements((prev) => prev.map((el) => {
+        if (el.id !== selectedId) return el;
+        const u = { ...el, modified: Date.now() };
+        if (CIRC_KINDS.has(el.type) || el.type === "circle") {
+          // radius resize — use distance from center
+          const cx = s.x, cy = s.y;
+          const nr = Math.max(4, Math.hypot(x - cx, y - cy));
+          u.radius = nr;
+          return u;
+        }
+        if (el.type === "ellipse") {
+          let nx = s.x, ny = s.y, nrx = s.rx, nry = s.ry;
+          if (h.includes("e")) nrx = Math.max(4, s.rx + dx);
+          if (h.includes("w")) { nrx = Math.max(4, s.rx - dx); nx = s.x + (s.rx - nrx); }
+          if (h.includes("s")) nry = Math.max(4, s.ry + dy);
+          if (h.includes("n")) { nry = Math.max(4, s.ry - dy); ny = s.y + (s.ry - nry); }
+          Object.assign(u, { x: nx, y: ny, rx: nrx, ry: nry });
+          return u;
+        }
+        // box-like
+        let nx = s.x, ny = s.y, nw = s.width, nh = s.height;
+        if (h.includes("e")) nw = Math.max(8, s.width + dx);
+        if (h.includes("w")) { nw = Math.max(8, s.width - dx); nx = s.x + (s.width - nw); }
+        if (h.includes("s")) nh = Math.max(8, s.height + dy);
+        if (h.includes("n")) { nh = Math.max(8, s.height - dy); ny = s.y + (s.height - nh); }
+        Object.assign(u, { x: nx, y: ny, width: nw, height: nh });
+        return u;
+      }));
+      return;
+    }
+
+    if (tool === "select" && !isDrawing && !isDragging) { setHoveredId(elementAt(x, y)); return; }
+
+    if (tool === "select" && isDragging && selectedId && dragElementStart) {
+      const dx = x - dragStartPos.x, dy = y - dragStartPos.y;
+      setElements((prev) => prev.map((el) => {
+        if (el.id !== selectedId) return el;
+        const u = { ...el, modified: Date.now() };
+        if (el.x !== undefined) { u.x = dragElementStart.x + dx; u.y = dragElementStart.y + dy; }
+        if (el.x1 !== undefined) {
+          u.x1 = dragElementStart.x1 + dx; u.y1 = dragElementStart.y1 + dy;
+          u.x2 = dragElementStart.x2 + dx; u.y2 = dragElementStart.y2 + dy;
+        }
+        if (el.points && dragElementStart.points) {
+          u.points = dragElementStart.points.map((p) => ({ x: p.x + dx, y: p.y + dy }));
+        }
+        return u;
+      }));
+      return;
+    }
+
+    if (!isDrawing) return;
+
+    if (tool === "pen") {
+      tempPointsRef.current.push({ x, y });
+      setCurrentShape({ type: "pen", points: [...tempPointsRef.current], strokeColor, lineWidth: lineWidth * (0.5 + pressure), isDashed });
+      return;
+    }
+
+    const w = x - startPos.x, h = y - startPos.y;
+    let shape = null;
+    const common = { strokeColor, fillColor, lineWidth, isDashed };
+    switch (tool) {
+      case "rect": shape = { type: "rect", x: startPos.x, y: startPos.y, width: w, height: h, ...common }; break;
+      case "rounded-rect": shape = { type: "rounded-rect", x: startPos.x, y: startPos.y, width: w, height: h, cornerRadius: 12, ...common }; break;
+      case "circle": shape = { type: "circle", x: startPos.x, y: startPos.y, radius: Math.hypot(w, h), ...common }; break;
+      case "ellipse": shape = { type: "ellipse", x: startPos.x, y: startPos.y, rx: Math.abs(w), ry: Math.abs(h), ...common }; break;
+      case "triangle": shape = { type: "triangle", x: startPos.x, y: startPos.y, width: w, height: h, ...common }; break;
+      case "line": shape = { type: "line", x1: startPos.x, y1: startPos.y, x2: x, y2: y, strokeColor, lineWidth, isDashed, hasArrow }; break;
+      case "arrow": shape = { type: "arrow", x1: startPos.x, y1: startPos.y, x2: x, y2: y, strokeColor, lineWidth, isDashed, hasArrow: true }; break;
+      case "parallelogram": shape = { type: "parallelogram", x: startPos.x, y: startPos.y, width: w, height: h, ...common }; break;
+      case "rhombus": shape = { type: "rhombus", x: startPos.x, y: startPos.y, width: w, height: h, ...common }; break;
+      case "pentagon": shape = { type: "pentagon", x: startPos.x, y: startPos.y, width: w, height: h, ...common }; break;
+      case "hexagon": shape = { type: "hexagon", x: startPos.x, y: startPos.y, width: w, height: h, ...common }; break;
+      case "star": shape = { type: "star", x: startPos.x, y: startPos.y, width: w, height: h, ...common }; break;
+      case "resistor": case "capacitor": case "inductor": case "battery": case "diode":
+        shape = { type: tool, x1: startPos.x, y1: startPos.y, x2: x, y2: y, strokeColor, lineWidth }; break;
+      case "voltmeter": case "ammeter":
+        shape = { type: tool, x: startPos.x, y: startPos.y, radius: Math.hypot(w, h), strokeColor, lineWidth }; break;
+      case "and-gate": case "or-gate": case "not-gate": case "nand-gate": case "nor-gate": case "xor-gate":
+        shape = { type: tool, x: startPos.x, y: startPos.y, width: w, height: h, strokeColor, fillColor, lineWidth }; break;
+      default: break;
+    }
+    if (shape) setCurrentShape(shape);
+  };
+
+  const onPointerUp = () => {
+    if (resizeHandle) {
+      setResizeHandle(null);
+      resizeStartRef.current = null;
+      saveToHistory(elements);
+      return;
+    }
+    if (isDragging) {
+      setIsDragging(false); setDragElementStart(null);
+      saveToHistory(elements);
+      return;
+    }
+    if (!isDrawing) return;
+    setIsDrawing(false);
+    let finalEl = null;
+    if (tool === "pen" && tempPointsRef.current.length > 0) {
+      finalEl = { id: generateId(), type: "pen", points: [...tempPointsRef.current], strokeColor, lineWidth, isDashed, created: Date.now(), modified: Date.now() };
+    } else if (currentShape) {
+      finalEl = { id: generateId(), ...currentShape, created: Date.now(), modified: Date.now() };
+    }
+    if (finalEl) {
+      const next = [...elements, finalEl];
+      setElements(next); saveToHistory(next); setSelectedId(finalEl.id);
+    }
+    setCurrentShape(null); tempPointsRef.current = [];
+  };
+
+  /* ---------- AI generation & preview ---------- */
+  const generateTikZ = async () => {
+    setLoading(true); setError(null);
+    try {
+      const payload = mode === "graph"
+        ? { mode: "graph", functions: functions.filter((f) => f.visible && f.expr.trim()), xRange, yRange, graphConfig, projectName }
+        : { elements, projectName };
+      const res = await fetch("/api/generate-tikz", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(payload) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      setTikzCode(data.tikzCode);
+      setOutputOpen(true); setOutputTab("code");
+    } catch (err) {
+      setError(err.message || "Failed to generate TikZ code");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const renderPreview = async () => {
+    if (!tikzCode) { setError("Generate TikZ code first"); return; }
+    setRenderingPreview(true); setError(null); setPreviewProgress(0);
+    setPreviewStatus("Preparing LaTeX document…");
+    try {
+      const iv = setInterval(() => setPreviewProgress((p) => Math.min(p + 10, 90)), 200);
+      setPreviewStatus("Compiling with pdflatex…");
+      const res = await fetch("/api/render-tikz", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ tikzCode }) });
+      clearInterval(iv);
+      if (!res.ok) { const e = await res.json(); throw new Error(e.error || "Render failed"); }
+      const data = await res.json();
+      if (data.error) throw new Error(data.error);
+      setPreviewStatus("Done"); setPreviewProgress(100); setPreviewImage(data.image);
+      setTimeout(() => { setPreviewStatus(""); setPreviewProgress(0); }, 500);
+    } catch (err) {
+      setError(err.message || "Failed to render preview"); setPreviewProgress(0); setPreviewStatus("");
+    } finally {
+      setRenderingPreview(false);
+    }
+  };
+
+  /* ---------- Save / Load / Export ---------- */
+  const saveProject = () => {
+    const proj = { version: "3.1", name: projectName, created: Date.now(), modified: Date.now(), elements, viewport: { zoom, pan, showGrid }, settings: { gridSize, snapToGrid } };
+    const url = URL.createObjectURL(new Blob([JSON.stringify(proj, null, 2)], { type: "application/json" }));
+    const a = document.createElement("a"); a.href = url; a.download = `${projectName.replace(/[^a-z0-9]/gi, "_")}.tikz.json`;
+    document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+  };
+  const loadProject = (file) => {
+    const r = new FileReader();
+    r.onload = (e) => {
+      try {
+        const p = JSON.parse(e.target.result);
+        setProjectName(p.name); setElements(p.elements || []);
+        setHistoryStack([p.elements || []]); setHistoryIndex(0);
+        setZoom(p.viewport?.zoom || 1); setPan(p.viewport?.pan || { x: 0, y: 0 });
+        setShowGrid(p.viewport?.showGrid ?? true);
+        setSelectedId(null);
+      } catch (err) { setError("Failed to load project: " + err.message); }
+    };
+    r.readAsText(file);
+  };
+  const onFilePick = (e) => { const f = e.target.files?.[0]; if (f) loadProject(f); };
+  const exportPNG = () => {
+    const c = canvasRef.current; if (!c) return;
+    c.toBlob((blob) => {
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a"); a.href = url; a.download = `${projectName}.png`;
+      document.body.appendChild(a); a.click(); document.body.removeChild(a); URL.revokeObjectURL(url);
+    });
+  };
+
+  /* ---------- Graph mode: function management & plotting ---------- */
+  const addFunction = () => {
+    const id = `f${fnIdCounter}`;
+    setFnIdCounter((n) => n + 1);
+    const colors = ["#2563eb", "#ef4444", "#10b981", "#f59e0b", "#8b5cf6", "#06b6d4", "#ec4899"];
+    setFunctions((fns) => [...fns, { id, expr: "x", color: colors[fns.length % colors.length], visible: true }]);
+  };
+  const updateFunction = (id, patch) => setFunctions((fns) => fns.map((f) => (f.id === id ? { ...f, ...patch } : f)));
+  const removeFunction = (id) => setFunctions((fns) => fns.filter((f) => f.id !== id));
+
+  const compiledFns = useMemo(
+    () => functions.map((f) => {
+      try { return { ...f, fn: compileFn(f.expr), error: null }; }
+      catch (err) { return { ...f, fn: null, error: err.message }; }
+    }),
+    [functions]
+  );
+
+  const renderGraph = () => {
+    const c = graphCanvasRef.current;
+    if (!c) return;
+    const ctx = c.getContext("2d");
+    const W = c.width, H = c.height;
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = "#ffffff"; ctx.fillRect(0, 0, W, H);
+
+    const [xMin, xMax] = xRange, [yMin, yMax] = yRange;
+    const cfg = graphConfig;
+    const padL = 48, padR = 16, padT = cfg.title ? 40 : 18, padB = cfg.xLabel ? 44 : 30;
+    const pw = W - padL - padR, ph = H - padT - padB;
+    const sx = (xv) => padL + ((xv - xMin) / (xMax - xMin)) * pw;
+    const sy = (yv) => padT + (1 - (yv - yMin) / (yMax - yMin)) * ph;
+    const xSpan = xMax - xMin, ySpan = yMax - yMin;
+
+    // ---- Grid ----
+    if (cfg.gridStyle !== "none") {
+      // minor grid
+      if (cfg.showMinorTicks && cfg.gridStyle === "both") {
+        ctx.strokeStyle = "#f3f4f6"; ctx.lineWidth = 1;
+        const minorStepX = xSpan <= 20 ? 0.2 : 0.5;
+        for (let v = Math.ceil(xMin / minorStepX) * minorStepX; v <= xMax; v += minorStepX) {
+          const X = sx(v); ctx.beginPath(); ctx.moveTo(X, padT); ctx.lineTo(X, padT + ph); ctx.stroke();
+        }
+        const minorStepY = ySpan <= 20 ? 0.2 : 0.5;
+        for (let v = Math.ceil(yMin / minorStepY) * minorStepY; v <= yMax; v += minorStepY) {
+          const Y = sy(v); ctx.beginPath(); ctx.moveTo(padL, Y); ctx.lineTo(padL + pw, Y); ctx.stroke();
+        }
+      }
+      // major grid
+      ctx.strokeStyle = "#e5e7eb"; ctx.lineWidth = 1;
+      for (let i = Math.ceil(xMin); i <= xMax; i++) { const X = sx(i); ctx.beginPath(); ctx.moveTo(X, padT); ctx.lineTo(X, padT + ph); ctx.stroke(); }
+      for (let i = Math.ceil(yMin); i <= yMax; i++) { const Y = sy(i); ctx.beginPath(); ctx.moveTo(padL, Y); ctx.lineTo(padL + pw, Y); ctx.stroke(); }
+    }
+
+    // ---- Axes ----
+    ctx.strokeStyle = "#475569"; ctx.lineWidth = 1.4;
+    if (yMin <= 0 && yMax >= 0) { const Y = sy(0); ctx.beginPath(); ctx.moveTo(padL, Y); ctx.lineTo(padL + pw, Y); ctx.stroke(); }
+    if (xMin <= 0 && xMax >= 0) { const X = sx(0); ctx.beginPath(); ctx.moveTo(X, padT); ctx.lineTo(X, padT + ph); ctx.stroke(); }
+    // border box
+    ctx.strokeStyle = "#94a3b8"; ctx.lineWidth = 1;
+    ctx.strokeRect(padL, padT, pw, ph);
+
+    // ---- Ticks ----
+    ctx.strokeStyle = "#475569"; ctx.lineWidth = 1;
+    ctx.fillStyle = "#475569"; ctx.font = "10.5px sans-serif";
+    // X major ticks
+    ctx.textAlign = "center"; ctx.textBaseline = "top";
+    if (cfg.showMajorTicks) {
+      for (let i = Math.ceil(xMin); i <= xMax; i++) {
+        const X = sx(i);
+        ctx.beginPath(); ctx.moveTo(X, padT + ph); ctx.lineTo(X, padT + ph + 5); ctx.stroke();
+        ctx.fillText(String(i), X, padT + ph + 7);
+      }
+      // X minor ticks
+      if (cfg.showMinorTicks) {
+        const step = xSpan <= 20 ? 0.2 : 0.5;
+        for (let v = Math.ceil(xMin / step) * step; v <= xMax; v += step) {
+          if (Math.abs(v - Math.round(v)) < 1e-9) continue;
+          const X = sx(v);
+          ctx.beginPath(); ctx.moveTo(X, padT + ph); ctx.lineTo(X, padT + ph + 3); ctx.stroke();
+        }
+      }
+    }
+    // Y major ticks
+    ctx.textAlign = "right"; ctx.textBaseline = "middle";
+    if (cfg.showMajorTicks) {
+      for (let i = Math.ceil(yMin); i <= yMax; i++) {
+        const Y = sy(i);
+        ctx.beginPath(); ctx.moveTo(padL - 5, Y); ctx.lineTo(padL, Y); ctx.stroke();
+        ctx.fillText(String(i), padL - 7, Y);
+      }
+      if (cfg.showMinorTicks) {
+        const step = ySpan <= 20 ? 0.2 : 0.5;
+        for (let v = Math.ceil(yMin / step) * step; v <= yMax; v += step) {
+          if (Math.abs(v - Math.round(v)) < 1e-9) continue;
+          const Y = sy(v);
+          ctx.beginPath(); ctx.moveTo(padL - 3, Y); ctx.lineTo(padL, Y); ctx.stroke();
+        }
+      }
+    }
+
+    // ---- Axis labels ----
+    ctx.fillStyle = "#1f2937"; ctx.font = "12px sans-serif";
+    if (cfg.xLabel) { ctx.textAlign = "center"; ctx.textBaseline = "bottom"; ctx.fillText(cfg.xLabel, padL + pw / 2, H - 6); }
+    if (cfg.yLabel) {
+      ctx.save(); ctx.translate(12, padT + ph / 2); ctx.rotate(-Math.PI / 2);
+      ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(cfg.yLabel, 0, 0); ctx.restore();
+    }
+    if (cfg.title) {
+      ctx.font = "bold 14px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "top";
+      ctx.fillText(cfg.title, padL + pw / 2, 8);
+    }
+
+    // ---- Plot functions ----
+    ctx.save();
+    ctx.beginPath(); ctx.rect(padL, padT, pw, ph); ctx.clip();
+    compiledFns.forEach((f) => {
+      if (!f.visible || !f.fn) return;
+      ctx.strokeStyle = f.color; ctx.lineWidth = 2; ctx.beginPath();
+      let pen = false;
+      for (let px = 0; px <= pw; px++) {
+        const xv = xMin + (px / pw) * xSpan;
+        let yv;
+        try { yv = f.fn(xv); } catch { yv = NaN; }
+        if (!isFinite(yv)) { pen = false; continue; }
+        const py = sy(yv);
+        if (py < padT - 200 || py > padT + ph + 200) { pen = false; continue; }
+        if (!pen) { ctx.moveTo(sx(xv), py); pen = true; } else ctx.lineTo(sx(xv), py);
+      }
+      ctx.stroke();
+    });
+
+    // data labels (value at endpoints of each visible curve)
+    if (cfg.showDataLabels) {
+      ctx.font = "10px sans-serif";
+      compiledFns.forEach((f) => {
+        if (!f.visible || !f.fn) return;
+        // label at x = xMax
+        try {
+          const yv = f.fn(xMax);
+          if (isFinite(yv)) {
+            const py = sy(yv);
+            if (py >= padT && py <= padT + ph) {
+              ctx.fillStyle = f.color; ctx.textAlign = "right"; ctx.textBaseline = "bottom";
+              ctx.fillText(`${yv.toFixed(2)}`, padL + pw - 4, py - 4);
+            }
+          }
+        } catch {}
+      });
+    }
+
+    // hover marker
+    if (graphHoverX != null && graphHoverX >= xMin && graphHoverX <= xMax) {
+      const X = sx(graphHoverX);
+      ctx.strokeStyle = "#cbd5e1"; ctx.setLineDash([4, 4]); ctx.lineWidth = 1;
+      ctx.beginPath(); ctx.moveTo(X, padT); ctx.lineTo(X, padT + ph); ctx.stroke(); ctx.setLineDash([]);
+      compiledFns.forEach((f) => {
+        if (!f.visible || !f.fn) return;
+        let yv; try { yv = f.fn(graphHoverX); } catch { yv = NaN; }
+        if (!isFinite(yv)) return;
+        const Y = sy(yv);
+        if (Y < padT || Y > padT + ph) return;
+        ctx.fillStyle = f.color;
+        ctx.beginPath(); ctx.arc(X, Y, 4, 0, Math.PI * 2); ctx.fill();
+        ctx.fillStyle = "#1f2937"; ctx.font = "11px sans-serif"; ctx.textAlign = "left"; ctx.textBaseline = "bottom";
+        ctx.fillText(`${f.expr} = ${yv.toFixed(3)}`, X + 8, Y - 6);
+      });
+    }
+    ctx.restore();
+
+    // ---- Legend ----
+    if (cfg.showLegend) {
+      const visible = compiledFns.filter((f) => f.visible && f.fn);
+      if (visible.length) {
+        ctx.font = "11px sans-serif";
+        const boxW = 18 + Math.max(...visible.map((f) => f.expr.length)) * 6.2;
+        const boxH = visible.length * 16 + 8;
+        const pos = cfg.legendPosition || "north east";
+        let bx, by;
+        if (pos.includes("west")) bx = padL + 8;
+        else bx = padL + pw - boxW - 8;
+        if (pos.includes("south")) by = padT + ph - boxH - 8;
+        else by = padT + 8;
+        ctx.fillStyle = "rgba(255,255,255,0.92)"; ctx.strokeStyle = "#cbd5e1"; ctx.lineWidth = 1;
+        ctx.fillRect(bx, by, boxW, boxH); ctx.strokeRect(bx, by, boxW, boxH);
+        ctx.textAlign = "left"; ctx.textBaseline = "middle";
+        visible.forEach((f, i) => {
+          const ly = by + 8 + i * 16;
+          ctx.strokeStyle = f.color; ctx.lineWidth = 2;
+          ctx.beginPath(); ctx.moveTo(bx + 6, ly); ctx.lineTo(bx + 22, ly); ctx.stroke();
+          ctx.fillStyle = "#1f2937"; ctx.fillText(f.expr, bx + 26, ly);
+        });
+      }
+    }
+  };
+
+  useEffect(() => {
+    if (mode !== "graph") return;
+    const sizeAndDraw = () => {
+      const c = graphCanvasRef.current;
+      const wrap = graphContainerRef.current;
+      if (c && wrap) { c.width = wrap.clientWidth; c.height = wrap.clientHeight; }
+      renderGraph();
+    };
+    sizeAndDraw();
+    const t = setTimeout(sizeAndDraw, 60);
+    window.addEventListener("resize", sizeAndDraw);
+    return () => { clearTimeout(t); window.removeEventListener("resize", sizeAndDraw); };
+  }, [mode, compiledFns, xRange, yRange, graphHoverX, graphConfig, renderGraph]);
+
+  const onGraphMove = (e) => {
+    const c = graphCanvasRef.current; if (!c) return;
+    const r = c.getBoundingClientRect();
+    const padL = 44, padR = 16;
+    const pw = c.width - padL - padR;
+    const px = e.clientX - r.left;
+    if (px < padL || px > padL + pw) { setGraphHoverX(null); return; }
+    const [xMin, xMax] = xRange;
+    setGraphHoverX(xMin + ((px - padL) / pw) * (xMax - xMin));
+  };
+
+  /* ---------- Canvas renderer (diagram mode) ---------- */
+  const renderDiagram = () => {
+    const c = canvasRef.current; if (!c) return;
+    const ctx = c.getContext("2d", { willReadFrequently: true });
+    ctx.fillStyle = "#fbfbfc"; ctx.fillRect(0, 0, c.width, c.height);
+
+    if (showGrid) {
+      ctx.save();
+      ctx.strokeStyle = "#e7e9ee"; ctx.lineWidth = 1 / zoom;
+      for (let x = 0; x < c.width / zoom; x += gridSize) { ctx.beginPath(); ctx.moveTo(x, 0); ctx.lineTo(x, c.height / zoom); ctx.stroke(); }
+      for (let y = 0; y < c.height / zoom; y += gridSize) { ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(c.width / zoom, y); ctx.stroke(); }
+      ctx.restore();
+    }
+
+    ctx.save();
+    ctx.translate(pan.x, pan.y);
+    ctx.scale(zoom, zoom);
+
+    elements.forEach((el) => drawElement(ctx, el));
+    if (isDrawing && currentShape) drawElement(ctx, currentShape);
+
+    // selection overlay
+    if (selectedId) {
+      const el = elements.find((e) => e.id === selectedId);
+      if (el) {
+        const b = getElementBounds(el);
+        ctx.strokeStyle = "#2563eb"; ctx.lineWidth = 1.5 / zoom; ctx.setLineDash([5 / zoom, 5 / zoom]);
+        ctx.strokeRect(b.x, b.y, b.width, b.height); ctx.setLineDash([]);
+        // 8 resize handles
+        const hs = 8 / zoom;
+        const midX = b.x + b.width / 2, midY = b.y + b.height / 2;
+        const handles = [
+          [b.x, b.y], [midX, b.y], [b.x + b.width, b.y],
+          [b.x + b.width, midY], [b.x + b.width, b.y + b.height],
+          [midX, b.y + b.height], [b.x, b.y + b.height], [b.x, midY],
+        ];
+        ctx.fillStyle = "#ffffff"; ctx.strokeStyle = "#2563eb"; ctx.lineWidth = 1.5 / zoom;
+        handles.forEach(([hx, hy]) => {
+          ctx.beginPath();
+          ctx.rect(hx - hs / 2, hy - hs / 2, hs, hs);
+          ctx.fill(); ctx.stroke();
+        });
+        // rotation handle (small circle above top edge)
+        const rotY = b.y - 22 / zoom;
+        ctx.beginPath();
+        ctx.moveTo(midX, b.y); ctx.lineTo(midX, rotY);
+        ctx.strokeStyle = "#2563eb"; ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(midX, rotY, 5 / zoom, 0, 2 * Math.PI);
+        ctx.fillStyle = "#2563eb"; ctx.fill();
+      }
+    }
+
+    // eraser hover
+    if (tool === "eraser" && hoveredId) {
+      const el = elements.find((e) => e.id === hoveredId);
+      if (el) {
+        const b = getElementBounds(el);
+        ctx.strokeStyle = "#ef4444"; ctx.lineWidth = 2 / zoom; ctx.setLineDash([5 / zoom, 5 / zoom]);
+        ctx.strokeRect(b.x, b.y, b.width, b.height); ctx.setLineDash([]);
+      }
+    }
+    ctx.restore();
+  };
+
+  // Re-render diagram canvas whenever relevant state changes
+  useEffect(() => {
+    if (mode === "diagram") renderDiagram();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [elements, zoom, pan, showGrid, selectedId, hoveredId, isDrawing, currentShape, mode]);
+
+  /* =========================================================================
+   * JSX
+   * ========================================================================= */
+  const filteredShapes = useMemo(() => {
+    const q = shapeSearch.trim().toLowerCase();
+    if (!q) return SHAPES.filter((s) => s.category === activeCategory);
+    return SHAPES.filter((s) => s.label.toLowerCase().includes(q) || s.kind.toLowerCase().includes(q));
+  }, [shapeSearch, activeCategory]);
+
+  return (
+    <div className="h-screen w-screen flex flex-col bg-[var(--background)] text-[var(--foreground)] overflow-hidden">
+      {/* ===================== TOP RIBBON ===================== */}
+      <header className="flex items-center gap-3 px-3 h-12 bg-white border-b border-[var(--border)] flex-shrink-0">
+        {/* logo */}
+        <div className="flex items-center gap-2 pr-3 border-r border-[var(--border)]">
+          <div className="w-7 h-7 rounded-md bg-gradient-to-br from-blue-600 to-indigo-600 text-white grid place-items-center font-bold text-sm">T</div>
+          <span className="font-bold text-[15px] text-slate-800 hidden sm:block">TikZ Studio</span>
+        </div>
+
+        {/* mode segmented control */}
+        <div className="segmented">
+          <button className={cx(mode === "diagram" && "is-active")} onClick={() => setMode("diagram")}>Diagram</button>
+          <button className={cx(mode === "graph" && "is-active")} onClick={() => setMode("graph")}>Graphing</button>
+        </div>
+
+        {/* project name */}
+        <input
+          type="text"
+          value={projectName}
+          onChange={(e) => setProjectName(e.target.value)}
+          className="prop-input !w-44 !font-semibold"
+          placeholder="Untitled Diagram"
+        />
+
+        <div className="flex-1" />
+
+        {/* common toolbar actions */}
+        {mode === "diagram" && (
+          <div className="flex items-center gap-1 pr-3 border-r border-[var(--border)]">
+            <button className="ribbon-btn tip" data-tip="Undo (Ctrl+Z)" onClick={handleUndo} disabled={!canUndo}>↶</button>
+            <button className="ribbon-btn tip" data-tip="Redo (Ctrl+Y)" onClick={handleRedo} disabled={!canRedo}>↷</button>
+            <div className="w-px h-5 bg-[var(--border)] mx-1" />
+            <button className="ribbon-btn tip" data-tip="Zoom out" onClick={zoomOut}>−</button>
+            <span className="text-xs font-mono w-10 text-center text-slate-600">{Math.round(zoom * 100)}%</span>
+            <button className="ribbon-btn tip" data-tip="Zoom in" onClick={zoomIn}>+</button>
+            <button className="ribbon-btn tip" data-tip="Reset view" onClick={zoomReset}>⊙</button>
+            <div className="w-px h-5 bg-[var(--border)] mx-1" />
+            <label className="ribbon-btn cursor-pointer">
+              <input type="checkbox" className="hidden" checked={showGrid} onChange={(e) => setShowGrid(e.target.checked)} />
+              <span className={cx(showGrid && "text-blue-600 font-semibold")}>▦ Grid</span>
+            </label>
+            <label className="ribbon-btn cursor-pointer">
+              <input type="checkbox" className="hidden" checked={snapToGrid} onChange={(e) => setSnapToGrid(e.target.checked)} />
+              <span className={cx(snapToGrid && "text-blue-600 font-semibold")}>⌖ Snap</span>
+            </label>
+          </div>
+        )}
+
+        <div className="flex items-center gap-1">
+          <button className="ribbon-btn" onClick={saveProject}>💾 <span className="hidden md:inline">Save</span></button>
+          <label className="ribbon-btn cursor-pointer">
+            📁 <span className="hidden md:inline">Open</span>
+            <input type="file" accept=".json" onChange={onFilePick} className="hidden" />
+          </label>
+          {mode === "diagram" && (
+            <button className="ribbon-btn" onClick={exportPNG}>📷 <span className="hidden md:inline">PNG</span></button>
+          )}
+          <button
+            onClick={generateTikZ}
+            disabled={loading || (mode === "diagram" ? elements.length === 0 : functions.every((f) => !f.expr.trim()))}
+            className="ml-2 px-3 h-8 rounded-md bg-gradient-to-r from-blue-600 to-indigo-600 text-white text-[12.5px] font-semibold hover:from-blue-700 hover:to-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed inline-flex items-center gap-2"
+          >
+            {loading ? <span className="spinner" /> : "✨"} Generate TikZ
+          </button>
+        </div>
+      </header>
+
+      {/* ===================== BODY ===================== */}
+      <div className="flex-1 flex overflow-hidden">
+        {mode === "diagram" ? (
+          <>
+            {/* ---------- LEFT: shape stencil ---------- */}
+            <aside style={{ width: leftWidth }} className="visio-panel flex-shrink-0 flex flex-col">
+              <div className="px-2 pt-2 pb-1 border-b border-[var(--border)]">
+                <div className="flex items-center gap-1 mb-2">
+                  {CATEGORIES.map((c) => (
+                    <button
+                      key={c}
+                      onClick={() => { setActiveCategory(c); setShapeSearch(""); }}
+                      className={cx(
+                        "flex-1 py-1.5 rounded text-[11px] font-semibold border transition",
+                        activeCategory === c && !shapeSearch
+                          ? "bg-blue-50 border-blue-300 text-blue-700"
+                          : "border-transparent text-slate-500 hover:bg-slate-100"
+                      )}
+                      title={c}
+                    >{CATEGORY_ICON[c]}</button>
+                  ))}
+                </div>
+                <input
+                  type="text"
+                  value={shapeSearch}
+                  onChange={(e) => setShapeSearch(e.target.value)}
+                  placeholder="🔍 Search shapes…"
+                  className="prop-input !text-[12px]"
+                />
+              </div>
+
+              {/* tools row */}
+              <div className="px-2 py-2 border-b border-[var(--border)] grid grid-cols-4 gap-1">
+                {[
+                  { k: "select", label: "Select", icon: "▭" },
+                  { k: "pen", label: "Pen", icon: "✏️" },
+                  { k: "eraser", label: "Erase", icon: "🧹" },
+                  { k: "text", label: "Text", icon: "T" },
+                ].map((t) => (
+                  <button
+                    key={t.k}
+                    onClick={() => { setTool(t.k); setPendingShape(null); }}
+                    className={cx("ribbon-btn flex-col !py-2 !px-1 !text-[10px]", tool === t.k && "is-active")}
+                  >
+                    <span className="text-base">{t.icon}</span>
+                    {t.label}
+                  </button>
+                ))}
+              </div>
+              {tool === "text" && (
+                <div className="px-2 py-2 border-b border-[var(--border)] space-y-2">
+                  <input type="text" value={textLabel} onChange={(e) => setTextLabel(e.target.value)} className="prop-input" placeholder="Text content…" />
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="prop-label">Size</label>
+                      <input type="number" min="8" max="120" value={textFontSize} onChange={(e) => setTextFontSize(+e.target.value)} className="prop-input" />
+                    </div>
+                    <div>
+                      <label className="prop-label">Font</label>
+                      <select value={textFontFamily} onChange={(e) => setTextFontFamily(e.target.value)} className="prop-input">
+                        <option value="sans-serif">Sans</option>
+                        <option value="serif">Serif</option>
+                        <option value="monospace">Mono</option>
+                        <option value="cursive">Cursive</option>
+                        <option value="Georgia">Georgia</option>
+                        <option value="Times New Roman">Times</option>
+                        <option value="Courier New">Courier</option>
+                        <option value="Comic Sans MS">Comic</option>
+                      </select>
+                    </div>
+                  </div>
+                  <label className="flex items-center gap-2 text-[12px] cursor-pointer">
+                    <input type="checkbox" checked={textIsLatex} onChange={(e) => setTextIsLatex(e.target.checked)} />
+                    LaTeX formula (e.g. <code className="font-mono text-[10px]">\frac{"{a}"}{"{b}"}</code>)
+                  </label>
+                </div>
+              )}
+
+              {/* shape grid */}
+              <div className="flex-1 overflow-y-auto p-2">
+                {shapeSearch && <div className="cat-header">Search results</div>}
+                {!shapeSearch && <div className="cat-header">{activeCategory}</div>}
+                <div className="grid grid-cols-2 gap-2">
+                  {filteredShapes.map((s) => (
+                    <button
+                      key={s.kind}
+                      onClick={() => requestPlace(s.kind)}
+                      className={cx("shape-tile", pendingShape === s.kind && "is-active")}
+                      title={`Place ${s.label}`}
+                    >
+                      <span className="shape-glyph"><Glyph>{s.glyph}</Glyph></span>
+                      <span className="truncate w-full">{s.label}</span>
+                    </button>
+                  ))}
+                  {filteredShapes.length === 0 && (
+                    <div className="col-span-2 text-center text-xs text-slate-400 py-6">No shapes found.</div>
+                  )}
+                </div>
+
+                {/* style defaults */}
+                <div className="cat-header mt-2">Style</div>
+                <div className="visio-panel-soft rounded-md p-2 space-y-2">
+                  <div>
+                    <label className="prop-label">Stroke</label>
+                    <div className="flex items-center gap-2">
+                      <input type="color" value={strokeColor} onChange={(e) => setStrokeColor(e.target.value)} className="w-8 h-7 rounded border border-[var(--border-2)] cursor-pointer" />
+                      <span className="text-[11px] font-mono text-slate-500">{strokeColor.toUpperCase()}</span>
+                    </div>
+                    <div className="grid grid-cols-8 gap-1 mt-1.5">
+                      {COLOR_PRESETS.map((c) => (
+                        <button key={c} onClick={() => setStrokeColor(c)} className="w-5 h-5 rounded border border-slate-300 hover:scale-110 transition" style={{ background: c }} />
+                      ))}
+                    </div>
+                  </div>
+                  <div>
+                    <label className="prop-label">Line width: {lineWidth}px</label>
+                    <input type="range" min="1" max="12" value={lineWidth} onChange={(e) => setLineWidth(+e.target.value)} className="w-full" />
+                  </div>
+                  <div className="flex gap-3">
+                    <label className="flex items-center gap-1.5 text-[12px] cursor-pointer">
+                      <input type="checkbox" checked={isDashed} onChange={(e) => setIsDashed(e.target.checked)} /> Dashed
+                    </label>
+                    <label className="flex items-center gap-1.5 text-[12px] cursor-pointer">
+                      <input type="checkbox" checked={hasArrow} onChange={(e) => setHasArrow(e.target.checked)} /> Arrow
+                    </label>
+                  </div>
+                  <div>
+                    <label className="prop-label">Fill</label>
+                    <div className="flex items-center gap-2">
+                      <input type="color" value={fillColor === "transparent" ? "#ffffff" : fillColor} onChange={(e) => setFillColor(e.target.value)} className="w-8 h-7 rounded border border-[var(--border-2)] cursor-pointer" />
+                      <button onClick={() => setFillColor("transparent")} className={cx("text-[11px] px-2 py-0.5 rounded", fillColor === "transparent" ? "bg-blue-600 text-white" : "bg-slate-200 text-slate-700")}>None</button>
+                    </div>
+                  </div>
+                </div>
+
+                <button onClick={clearAll} className="ribbon-btn !text-red-600 w-full justify-center mt-2 hover:!bg-red-50">🗑️ Clear All</button>
+              </div>
+            </aside>
+
+            <div className="resizer-v" onMouseDown={() => { resizingLeftRef.current = true; document.body.style.cursor = "col-resize"; }} />
+
+            {/* ---------- CENTER: canvas + output dock ---------- */}
+            <div className="flex-1 flex flex-col overflow-hidden">
+              <div className="flex-1 flex overflow-hidden">
+                <div className="flex-1 flex flex-col p-3 overflow-hidden">
+                  {/* status strip */}
+                  <div className="flex items-center gap-3 mb-2 text-[11px] text-slate-500">
+                    <span className={cx("px-2 py-0.5 rounded-full font-semibold", pendingShape ? "bg-blue-100 text-blue-700" : tool === "select" ? "bg-emerald-100 text-emerald-700" : tool === "eraser" ? "bg-red-100 text-red-700" : "bg-slate-100 text-slate-600")}>
+                      {pendingShape ? `Click canvas to place: ${pendingShape}` : tool === "select" ? "Select & move" : tool === "eraser" ? "Eraser (click to delete)" : tool === "pen" ? "Free draw" : tool === "text" ? "Click to place text" : "Diagram"}
+                    </span>
+                    <span>{elements.length} element{elements.length !== 1 ? "s" : ""}</span>
+                    {selectedElement && <span className="text-blue-600 font-semibold">• Selected: {selectedElement.type} ({selectedElement.id})</span>}
+                  </div>
+
+                  <div className={cx("flex-1 rounded-lg overflow-hidden relative border border-[var(--border)]", !showGrid && "no-grid")} style={{ background: "var(--canvas-bg)" }} ref={containerRef}>
+                    <canvas
+                      ref={canvasRef}
+                      onPointerDown={onPointerDown}
+                      onPointerMove={onPointerMove}
+                      onPointerUp={onPointerUp}
+                      className={cx(
+                        "touch-none w-full h-full",
+                        tool === "select" ? (hoveredId ? "cursor-move" : "cursor-default") :
+                        tool === "eraser" ? "cursor-not-allowed" :
+                        pendingShape ? "cursor-copy" : "cursor-crosshair"
+                      )}
+                    />
+                  </div>
+
+                  {/* Output dock */}
+                  {outputOpen && (
+                    <>
+                      <div className="resizer-h" onMouseDown={() => { resizingOutputRef.current = true; document.body.style.cursor = "row-resize"; }} />
+                      <div style={{ height: outputHeight }} className="visio-panel rounded-lg mt-2 flex flex-col overflow-hidden flex-shrink-0">
+                        <div className="flex items-center gap-2 px-3 h-9 border-b border-[var(--border)] bg-[var(--panel-2)]">
+                          <div className="segmented !p-0.5">
+                            <button className={cx(outputTab === "code" && "is-active")} onClick={() => setOutputTab("code")}>Code</button>
+                            <button className={cx(outputTab === "preview" && "is-active")} onClick={() => setOutputTab("preview")}>Preview</button>
+                          </div>
+                          <div className="flex-1" />
+                          {outputTab === "code" && (
+                            <button
+                              onClick={() => { navigator.clipboard.writeText(tikzCode); }}
+                              disabled={!tikzCode}
+                              className="ribbon-btn disabled:opacity-40"
+                            >📋 Copy</button>
+                          )}
+                          {outputTab === "preview" && (
+                            <button onClick={renderPreview} disabled={!tikzCode || renderingPreview} className="ribbon-btn disabled:opacity-40">
+                              {renderingPreview ? <span className="spinner spinner-dark" /> : "🖼️"} Render
+                            </button>
+                          )}
+                          <button onClick={() => setOutputOpen(false)} className="ribbon-btn">✕</button>
+                        </div>
+                        <div className="flex-1 overflow-auto relative">
+                          {outputTab === "code" ? (
+                            <textarea
+                              value={tikzCode}
+                              onChange={(e) => setTikzCode(e.target.value)}
+                              className="code-area w-full h-full p-3 border-0 resize-none focus:outline-none"
+                              placeholder="Generated TikZ code will appear here after you click Generate…"
+                            />
+                          ) : renderingPreview ? (
+                            <div className="p-4">
+                              <div className="flex items-center justify-between mb-2 text-xs text-slate-600">
+                                <span>{previewStatus}</span><span className="font-semibold text-blue-600">{previewProgress}%</span>
+                              </div>
+                              <div className="w-full bg-slate-200 rounded-full h-1.5 overflow-hidden">
+                                <div className="bg-blue-600 h-1.5 transition-all" style={{ width: `${previewProgress}%` }} />
+                              </div>
+                            </div>
+                          ) : previewImage ? (
+                            <div className="p-4 grid place-items-center h-full bg-slate-50">
+                              <img src={previewImage} alt="TikZ Preview" className="max-w-full max-h-full object-contain" />
+                            </div>
+                          ) : (
+                            <div className="grid place-items-center h-full text-slate-400 text-sm">
+                              {tikzCode ? "Click \u201cRender\u201d to compile with pdflatex" : "Generate code first"}
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    </>
+                  )}
+                  {!outputOpen && (
+                    <button onClick={() => setOutputOpen(true)} className="ribbon-btn mx-auto mt-2 self-center">
+                      ▴ Show Code & Preview
+                    </button>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="resizer-v" onMouseDown={() => { resizingRightRef.current = true; document.body.style.cursor = "col-resize"; }} />
+
+            {/* ---------- RIGHT: properties ---------- */}
+            <aside style={{ width: rightWidth }} className="visio-panel flex-shrink-0 flex flex-col">
+              <div className="px-3 h-9 flex items-center border-b border-[var(--border)] bg-[var(--panel-2)]">
+                <span className="font-semibold text-[13px] text-slate-700">Properties</span>
+              </div>
+              <div className="flex-1 overflow-y-auto p-3">
+                {selectedElement ? (
+                  <PropertiesPanel
+                    el={selectedElement}
+                    update={(k, v) => updateElementProperty(selectedElement.id, k, v)}
+                    commit={commitHistory}
+                    onDuplicate={duplicateSelected}
+                    onDelete={deleteSelected}
+                  />
+                ) : (
+                  <EmptyProps onOpenOutput={() => setOutputOpen(true)} hasCode={!!tikzCode} />
+                )}
+              </div>
+            </aside>
+          </>
+        ) : (
+          /* ============== GRAPHING MODE ============== */
+          <GraphingMode
+            functions={functions}
+            compiledFns={compiledFns}
+            xRange={xRange}
+            yRange={yRange}
+            graphConfig={graphConfig}
+            setGraphConfig={setGraphConfig}
+            graphCanvasRef={graphCanvasRef}
+            graphContainerRef={graphContainerRef}
+            onMove={onGraphMove}
+            onLeave={() => setGraphHoverX(null)}
+            addFunction={addFunction}
+            updateFunction={updateFunction}
+            removeFunction={removeFunction}
+            setXRange={setXRange}
+            setYRange={setYRange}
+            error={error}
+          />
+        )}
+      </div>
+
+      {error && !outputOpen && (
+        <div className="fixed bottom-4 right-4 z-50 bg-red-600 text-white px-4 py-2 rounded-lg shadow-lg text-sm">
+          {error}
+          <button className="ml-3 opacity-80 hover:opacity-100" onClick={() => setError(null)}>✕</button>
+        </div>
+      )}
+    </div>
+  );
+}
+
+
+/* =========================================================================
+ * PURE HELPERS (outside component to avoid re-creation)
+ * hit detection & bounds. Lifted from original, extended for new shape kinds.
+ * ========================================================================= */
+const BOX_KINDS = new Set([
+  "rect", "rounded-rect", "parallelogram", "process", "terminator", "document",
+  "and-gate", "or-gate", "not-gate", "nand-gate", "nor-gate", "xor-gate",
+  "rhombus", "pentagon", "hexagon", "star", "triangle", "decision",
+]);
+const CIRC_KINDS = new Set(["circle", "voltmeter", "ammeter", "connector"]);
+const POLY_KINDS = new Set(["rhombus", "pentagon", "hexagon", "star", "triangle", "decision"]);
+const LINE_KINDS = new Set(["line", "arrow", "resistor", "capacitor", "inductor", "battery", "diode"]);
+
+function isPointInElement(x, y, el, tol = 6) {
+  // Inverse-rotate the test point into the element's local (unrotated) frame
+  if (el.rotation) {
+    let cx, cy;
+    if (LINE_KINDS.has(el.type)) { cx = (el.x1 + el.x2) / 2; cy = (el.y1 + el.y2) / 2; }
+    else if (CIRC_KINDS.has(el.type) || el.type === "ellipse") { cx = el.x; cy = el.y; }
+    else if (el.type === "text") { cx = el.x; cy = el.y - (el.fontSize || 16) / 2; }
+    else { cx = (el.x || 0) + (el.width || 0) / 2; cy = (el.y || 0) + (el.height || 0) / 2; }
+    const rad = (-el.rotation * Math.PI) / 180;
+    const cos = Math.cos(rad), sin = Math.sin(rad);
+    const rx = cx + (x - cx) * cos - (y - cy) * sin;
+    const ry = cy + (x - cx) * sin + (y - cy) * cos;
+    x = rx; y = ry;
+  }
+
+  if (BOX_KINDS.has(el.type)) {
+    return x >= el.x - tol && x <= el.x + (el.width || 0) + tol &&
+           y >= el.y - tol && y <= el.y + (el.height || 0) + tol;
+  }
+  if (CIRC_KINDS.has(el.type)) {
+    return Math.hypot(x - el.x, y - el.y) <= (el.radius || 0) + tol;
+  }
+  if (el.type === "ellipse") {
+    const dx = (x - el.x) / (el.rx || 1);
+    const dy = (y - el.y) / (el.ry || 1);
+    return Math.hypot(dx, dy) <= 1 + tol / Math.max(el.rx || 1, el.ry || 1);
+  }
+  if (LINE_KINDS.has(el.type)) {
+    const lx = el.x2 - el.x1, ly = el.y2 - el.y1;
+    const len = Math.hypot(lx, ly);
+    if (len === 0) return Math.hypot(x - el.x1, y - el.y1) <= tol;
+    const t = Math.max(0, Math.min(1, ((x - el.x1) * lx + (y - el.y1) * ly) / (len * len)));
+    return Math.hypot(x - (el.x1 + t * lx), y - (el.y1 + t * ly)) <= tol + (el.lineWidth || 2) / 2;
+  }
+  if (el.type === "pen" || el.type === "sine") {
+    if (!el.points || !el.points.length) return false;
+    return el.points.some((p) => Math.hypot(x - p.x, y - p.y) <= tol + (el.lineWidth || 2));
+  }
+  if (el.type === "text") {
+    const w = (el.text?.length || 1) * (el.fontSize || 16) * 0.6;
+    const h = el.fontSize || 16;
+    return x >= el.x - tol && x <= el.x + w + tol && y >= el.y - h - tol && y <= el.y + tol;
+  }
+  if (el.type === "ground") {
+    return x >= el.x - 20 - tol && x <= el.x + 20 + tol && y >= el.y - tol && y <= el.y + 35 + tol;
+  }
+  if (el.type === "graph") {
+    return x >= el.x - tol && x <= el.x + (el.width || 0) + tol &&
+           y >= el.y - tol && y <= el.y + (el.height || 0) + tol;
+  }
+  return false;
+}
+
+function getElementBounds(el, pad = 6) {
+  if (BOX_KINDS.has(el.type)) {
+    return { x: el.x - pad, y: el.y - pad, width: (el.width || 0) + 2 * pad, height: (el.height || 0) + 2 * pad };
+  }
+  if (el.type === "text") {
+    const w = (el.text?.length || 1) * (el.fontSize || 16) * 0.6;
+    const h = el.fontSize || 16;
+    return { x: el.x - pad, y: el.y - h - pad, width: w + 2 * pad, height: h + 2 * pad };
+  }
+  if (CIRC_KINDS.has(el.type)) {
+    const r = el.radius || 0;
+    return { x: el.x - r - pad, y: el.y - r - pad, width: r * 2 + 2 * pad, height: r * 2 + 2 * pad };
+  }
+  if (el.type === "ellipse") {
+    return { x: el.x - el.rx - pad, y: el.y - el.ry - pad, width: el.rx * 2 + 2 * pad, height: el.ry * 2 + 2 * pad };
+  }
+  if (LINE_KINDS.has(el.type)) {
+    const minX = Math.min(el.x1, el.x2), maxX = Math.max(el.x1, el.x2);
+    const minY = Math.min(el.y1, el.y2), maxY = Math.max(el.y1, el.y2);
+    return { x: minX - pad - 20, y: minY - pad - 20, width: maxX - minX + 2 * pad + 40, height: maxY - minY + 2 * pad + 40 };
+  }
+  if (el.type === "pen" || el.type === "sine") {
+    if (!el.points?.length) return { x: el.x || 0, y: el.y || 0, width: 10, height: 10 };
+    const xs = el.points.map((p) => p.x), ys = el.points.map((p) => p.y);
+    return { x: Math.min(...xs) - pad, y: Math.min(...ys) - pad, width: Math.max(...xs) - Math.min(...xs) + 2 * pad, height: Math.max(...ys) - Math.min(...ys) + 2 * pad };
+  }
+  if (el.type === "ground") {
+    return { x: el.x - 20 - pad, y: el.y - pad, width: 40 + 2 * pad, height: 35 + 2 * pad };
+  }
+  if (el.type === "graph") {
+    return { x: el.x - pad, y: el.y - pad - 30, width: (el.width || 0) + 2 * pad, height: (el.height || 0) + 2 * pad + 50 };
+  }
+  return { x: el.x || 0, y: el.y || 0, width: 50, height: 50 };
+}
+
+/* =========================================================================
+ * CANVAS DRAWING PRIMITIVES
+ * ========================================================================= */
+function drawElement(ctx, el) {
+  ctx.save();
+
+  // Rotation around the element center (if any)
+  if (el.rotation) {
+    let cx, cy;
+    if (LINE_KINDS.has(el.type)) {
+      cx = (el.x1 + el.x2) / 2; cy = (el.y1 + el.y2) / 2;
+    } else if (CIRC_KINDS.has(el.type)) {
+      cx = el.x; cy = el.y;
+    } else if (el.type === "ellipse") {
+      cx = el.x; cy = el.y;
+    } else if (el.type === "text") {
+      cx = el.x; cy = el.y - (el.fontSize || 16) / 2;
+    } else {
+      cx = (el.x || 0) + (el.width || 0) / 2;
+      cy = (el.y || 0) + (el.height || 0) / 2;
+    }
+    ctx.translate(cx, cy);
+    ctx.rotate((el.rotation * Math.PI) / 180);
+    ctx.translate(-cx, -cy);
+  }
+
+  // Apply fill opacity
+  if (el.fillColor && el.fillColor !== "transparent" && el.fillOpacity != null && el.fillOpacity < 1) {
+    ctx.globalAlpha = el.fillOpacity;
+  }
+
+  ctx.strokeStyle = el.strokeColor || "#1f2937";
+  ctx.lineWidth = el.lineWidth || 2;
+  ctx.fillStyle = el.fillColor && el.fillColor !== "transparent" ? el.fillColor : "transparent";
+  ctx.setLineDash(el.isDashed ? [8, 6] : []);
+  ctx.lineJoin = "round"; ctx.lineCap = "round";
+
+  const fill = () => { if (el.fillColor && el.fillColor !== "transparent") ctx.fill(); };
+
+  switch (el.type) {
+    case "rect":
+      ctx.strokeRect(el.x, el.y, el.width, el.height); fill(); break;
+    case "rounded-rect":
+      roundRect(ctx, el.x, el.y, el.width, el.height, el.cornerRadius || 12); ctx.stroke(); fill(); break;
+    case "circle":
+      ctx.beginPath(); ctx.arc(el.x, el.y, el.radius, 0, 2 * Math.PI); ctx.stroke(); fill(); break;
+    case "ellipse":
+      ctx.beginPath(); ctx.ellipse(el.x, el.y, el.rx, el.ry, 0, 0, 2 * Math.PI); ctx.stroke(); fill(); break;
+    case "triangle":
+      ctx.beginPath();
+      ctx.moveTo(el.x + el.width / 2, el.y);
+      ctx.lineTo(el.x, el.y + el.height);
+      ctx.lineTo(el.x + el.width, el.y + el.height);
+      ctx.closePath(); ctx.stroke(); fill(); break;
+    case "line":
+    case "arrow": {
+      ctx.beginPath(); ctx.moveTo(el.x1, el.y1); ctx.lineTo(el.x2, el.y2); ctx.stroke();
+      if (el.hasArrow || el.type === "arrow") drawArrowhead(ctx, el.x1, el.y1, el.x2, el.y2, el.strokeColor);
+      break;
+    }
+    case "pen":
+      if (el.points?.length > 0) {
+        ctx.beginPath(); ctx.moveTo(el.points[0].x, el.points[0].y);
+        el.points.forEach((p) => ctx.lineTo(p.x, p.y));
+        ctx.stroke();
+      }
+      break;
+    case "text": {
+      const fs = el.fontSize || 18;
+      const fam = el.fontFamily || "sans-serif";
+      ctx.font = `${el.isLatex ? "italic " : ""}${fs}px ${fam}`;
+      ctx.fillStyle = el.strokeColor || "#1f2937";
+      ctx.textBaseline = "alphabetic";
+      const display = el.isLatex ? (el.text || "").replace(/\\\w+\{|}|\\|_/g, "") : (el.text || "Label");
+      ctx.fillText(display, el.x, el.y);
+      // small marker indicating LaTeX mode
+      if (el.isLatex) {
+        const w = ctx.measureText(display).width;
+        ctx.fillStyle = "#8b5cf6";
+        ctx.font = `9px ${fam}`;
+        ctx.fillText("TeX", el.x + w + 4, el.y);
+      }
+      break;
+    }
+    case "parallelogram": {
+      const sk = el.width * 0.2;
+      ctx.beginPath();
+      ctx.moveTo(el.x + sk, el.y);
+      ctx.lineTo(el.x + el.width, el.y);
+      ctx.lineTo(el.x + el.width - sk, el.y + el.height);
+      ctx.lineTo(el.x, el.y + el.height);
+      ctx.closePath(); ctx.stroke(); fill(); break;
+    }
+    case "rhombus":
+    case "decision": {
+      const cx = el.x + el.width / 2, cy = el.y + el.height / 2;
+      ctx.beginPath();
+      ctx.moveTo(cx, el.y); ctx.lineTo(el.x + el.width, cy);
+      ctx.lineTo(cx, el.y + el.height); ctx.lineTo(el.x, cy);
+      ctx.closePath(); ctx.stroke(); fill(); break;
+    }
+    case "pentagon": {
+      const cx = el.x + el.width / 2, cy = el.y + el.height / 2;
+      const rx = el.width / 2, ry = el.height / 2;
+      ctx.beginPath();
+      for (let i = 0; i < 5; i++) {
+        const a = (i * 2 * Math.PI / 5) - Math.PI / 2;
+        const px = cx + rx * Math.cos(a), py = cy + ry * Math.sin(a);
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.closePath(); ctx.stroke(); fill(); break;
+    }
+    case "hexagon": {
+      const cx = el.x + el.width / 2, cy = el.y + el.height / 2;
+      const rx = el.width / 2, ry = el.height / 2;
+      ctx.beginPath();
+      for (let i = 0; i < 6; i++) {
+        const a = (i * 2 * Math.PI / 6);
+        const px = cx + rx * Math.cos(a), py = cy + ry * Math.sin(a);
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.closePath(); ctx.stroke(); fill(); break;
+    }
+    case "star": {
+      const cx = el.x + el.width / 2, cy = el.y + el.height / 2;
+      const rx = el.width / 2, ry = el.height / 2;
+      const ratio = el.innerRatio != null ? el.innerRatio : 0.42;
+      ctx.beginPath();
+      for (let i = 0; i < 10; i++) {
+        const r = i % 2 === 0 ? 1 : ratio;
+        const a = (i * Math.PI / 5) - Math.PI / 2;
+        const px = cx + rx * r * Math.cos(a), py = cy + ry * r * Math.sin(a);
+        if (i === 0) ctx.moveTo(px, py); else ctx.lineTo(px, py);
+      }
+      ctx.closePath(); ctx.stroke(); fill(); break;
+    }
+    case "resistor": drawResistor(ctx, el.x1, el.y1, el.x2, el.y2); break;
+    case "capacitor": drawCapacitor(ctx, el.x1, el.y1, el.x2, el.y2); break;
+    case "inductor": drawInductor(ctx, el.x1, el.y1, el.x2, el.y2); break;
+    case "battery": drawBattery(ctx, el.x1, el.y1, el.x2, el.y2); break;
+    case "diode": drawDiode(ctx, el.x1, el.y1, el.x2, el.y2); break;
+    case "ground": drawGround(ctx, el.x, el.y); break;
+    case "voltmeter": drawMeter(ctx, el.x, el.y, el.radius, "V"); break;
+    case "ammeter": drawMeter(ctx, el.x, el.y, el.radius, "A"); break;
+    case "connector":
+      ctx.beginPath(); ctx.arc(el.x, el.y, el.radius, 0, 2 * Math.PI); ctx.stroke(); fill(); break;
+    case "process": roundRect(ctx, el.x, el.y, el.width, el.height, 4); ctx.stroke(); fill(); break;
+    case "terminator": roundRect(ctx, el.x, el.y, el.width, el.height, el.height / 2); ctx.stroke(); fill(); break;
+    case "document":
+      ctx.beginPath();
+      ctx.moveTo(el.x, el.y);
+      ctx.lineTo(el.x + el.width, el.y);
+      ctx.lineTo(el.x + el.width, el.y + el.height);
+      ctx.quadraticCurveTo(el.x + el.width / 2, el.y + el.height + 14, el.x, el.y + el.height);
+      ctx.closePath(); ctx.stroke(); fill(); break;
+    case "and-gate": drawAndGate(ctx, el.x, el.y, el.width, el.height, el.fillColor); break;
+    case "or-gate": drawOrGate(ctx, el.x, el.y, el.width, el.height, el.fillColor); break;
+    case "not-gate": drawNotGate(ctx, el.x, el.y, el.width, el.height, el.fillColor); break;
+    case "nand-gate": drawNandGate(ctx, el.x, el.y, el.width, el.height, el.fillColor); break;
+    case "nor-gate": drawNorGate(ctx, el.x, el.y, el.width, el.height, el.fillColor); break;
+    case "xor-gate": drawXorGate(ctx, el.x, el.y, el.width, el.height, el.fillColor); break;
+    case "sine": drawSine(ctx, el.x1, el.y1, el.x2, el.y2, el.strokeColor, el.lineWidth); break;
+    case "graph": drawGraphEl(ctx, el); break;
+    default: break;
+  }
+  ctx.restore();
+}
+
+function roundRect(ctx, x, y, w, h, r) {
+  r = Math.min(r, Math.abs(w) / 2, Math.abs(h) / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+function drawArrowhead(ctx, fromX, fromY, toX, toY, color) {
+  const head = 14;
+  const a = Math.atan2(toY - fromY, toX - fromX);
+  ctx.save(); ctx.setLineDash([]);
+  ctx.beginPath();
+  ctx.moveTo(toX, toY);
+  ctx.lineTo(toX - head * Math.cos(a - Math.PI / 6), toY - head * Math.sin(a - Math.PI / 6));
+  ctx.lineTo(toX - head * Math.cos(a + Math.PI / 6), toY - head * Math.sin(a + Math.PI / 6));
+  ctx.closePath(); ctx.fillStyle = color || ctx.strokeStyle; ctx.fill();
+  ctx.restore();
+}
+
+/* circuit primitives (preserved from original) */
+function withOrientedSegment(x1, y1, x2, y2, fn) {
+  const dx = x2 - x1, dy = y2 - y1;
+  const distance = Math.hypot(dx, dy);
+  const angle = Math.atan2(dy, dx);
+  return (ctx) => {
+    ctx.save(); ctx.translate(x1, y1); ctx.rotate(angle);
+    fn(ctx, distance); ctx.restore();
+  };
+}
+function drawResistor(ctx, x1, y1, x2, y2) {
+  withOrientedSegment(x1, y1, x2, y2, (c, d) => {
+    c.beginPath(); c.moveTo(0, 0); c.lineTo(d * 0.25, 0);
+    const seg = 6, sx = d * 0.25, ex = d * 0.75, step = (ex - sx) / seg, amp = 14;
+    for (let i = 0; i < seg; i++) { c.lineTo(sx + step * i + step / 2, i % 2 === 0 ? -amp : amp); }
+    c.lineTo(ex, 0); c.lineTo(d, 0); c.stroke();
+  })(ctx);
+}
+function drawCapacitor(ctx, x1, y1, x2, y2) {
+  withOrientedSegment(x1, y1, x2, y2, (c, d) => {
+    const ph = 22, gap = 7, mid = d / 2;
+    c.beginPath();
+    c.moveTo(0, 0); c.lineTo(mid - gap / 2, 0);
+    c.moveTo(mid - gap / 2, -ph / 2); c.lineTo(mid - gap / 2, ph / 2);
+    c.moveTo(mid + gap / 2, -ph / 2); c.lineTo(mid + gap / 2, ph / 2);
+    c.moveTo(mid + gap / 2, 0); c.lineTo(d, 0); c.stroke();
+  })(ctx);
+}
+function drawInductor(ctx, x1, y1, x2, y2) {
+  withOrientedSegment(x1, y1, x2, y2, (c, d) => {
+    const coils = 4, cw = (d * 0.5) / coils, sx = d * 0.25;
+    c.beginPath(); c.moveTo(0, 0); c.lineTo(sx, 0);
+    for (let i = 0; i < coils; i++) { c.arc(sx + i * cw + cw / 2, 0, cw / 2, Math.PI, 0, false); }
+    c.lineTo(d, 0); c.stroke();
+  })(ctx);
+}
+function drawBattery(ctx, x1, y1, x2, y2) {
+  withOrientedSegment(x1, y1, x2, y2, (c, d) => {
+    c.beginPath();
+    c.moveTo(0, 0); c.lineTo(d * 0.4, 0);
+    c.moveTo(d * 0.4, -14); c.lineTo(d * 0.4, 14);
+    c.moveTo(d * 0.6, -8); c.lineTo(d * 0.6, 8);
+    c.moveTo(d * 0.6, 0); c.lineTo(d, 0); c.stroke();
+  })(ctx);
+}
+function drawDiode(ctx, x1, y1, x2, y2) {
+  withOrientedSegment(x1, y1, x2, y2, (c, d) => {
+    c.beginPath(); c.moveTo(0, 0); c.lineTo(d * 0.3, 0);
+    c.moveTo(d * 0.3, -11); c.lineTo(d * 0.7, 0); c.lineTo(d * 0.3, 11); c.closePath(); c.stroke();
+    c.beginPath(); c.moveTo(d * 0.7, -11); c.lineTo(d * 0.7, 11); c.stroke();
+    c.beginPath(); c.moveTo(d * 0.7, 0); c.lineTo(d, 0); c.stroke();
+  })(ctx);
+}
+function drawGround(ctx, x, y) {
+  ctx.beginPath();
+  ctx.moveTo(x, y); ctx.lineTo(x, y + 18);
+  ctx.moveTo(x - 14, y + 18); ctx.lineTo(x + 14, y + 18);
+  ctx.moveTo(x - 10, y + 23); ctx.lineTo(x + 10, y + 23);
+  ctx.moveTo(x - 5, y + 28); ctx.lineTo(x + 5, y + 28);
+  ctx.stroke();
+}
+function drawMeter(ctx, cx, cy, r, label) {
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, 2 * Math.PI); ctx.stroke();
+  ctx.font = "bold 18px sans-serif"; ctx.fillStyle = ctx.strokeStyle;
+  ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(label, cx, cy);
+}
+
+/* logic gates (preserved) */
+function drawAndGate(ctx, x, y, w, h, fill) {
+  ctx.beginPath();
+  ctx.moveTo(x, y); ctx.lineTo(x + w * 0.5, y);
+  ctx.arc(x + w * 0.5, y + h / 2, h / 2, -Math.PI / 2, Math.PI / 2);
+  ctx.lineTo(x, y + h); ctx.closePath(); ctx.stroke();
+  if (fill && fill !== "transparent") { ctx.fillStyle = fill; ctx.fill(); }
+}
+function drawOrGate(ctx, x, y, w, h, fill) {
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.quadraticCurveTo(x + w * 0.6, y, x + w, y + h / 2);
+  ctx.quadraticCurveTo(x + w * 0.6, y + h, x, y + h);
+  ctx.quadraticCurveTo(x + w * 0.2, y + h / 2, x, y);
+  ctx.stroke();
+  if (fill && fill !== "transparent") { ctx.fillStyle = fill; ctx.fill(); }
+}
+function drawNotGate(ctx, x, y, w, h, fill) {
+  ctx.beginPath(); ctx.moveTo(x, y); ctx.lineTo(x + w * 0.8, y + h / 2); ctx.lineTo(x, y + h); ctx.closePath(); ctx.stroke();
+  ctx.beginPath(); ctx.arc(x + w * 0.9, y + h / 2, w * 0.1, 0, 2 * Math.PI); ctx.stroke();
+  if (fill && fill !== "transparent") { ctx.fillStyle = fill; ctx.fill(); }
+}
+function drawNandGate(ctx, x, y, w, h, fill) {
+  drawAndGate(ctx, x, y, w * 0.85, h, fill);
+  ctx.beginPath(); ctx.arc(x + w * 0.93, y + h / 2, w * 0.07, 0, 2 * Math.PI); ctx.stroke();
+}
+function drawNorGate(ctx, x, y, w, h, fill) {
+  drawOrGate(ctx, x, y, w * 0.85, h, fill);
+  ctx.beginPath(); ctx.arc(x + w * 0.93, y + h / 2, w * 0.07, 0, 2 * Math.PI); ctx.stroke();
+}
+function drawXorGate(ctx, x, y, w, h, fill) {
+  ctx.beginPath();
+  ctx.moveTo(x - w * 0.1, y);
+  ctx.quadraticCurveTo(x + w * 0.1, y + h / 2, x - w * 0.1, y + h);
+  ctx.stroke();
+  drawOrGate(ctx, x, y, w, h, fill);
+}
+
+/* math plots (preserved, simplified) */
+function drawSine(ctx, x1, y1, x2, y2, color, lw) {
+  const w = x2 - x1, amp = Math.abs((y2 - y1) / 2) || 30;
+  ctx.save();
+  ctx.strokeStyle = "#cbd5e1"; ctx.lineWidth = 1; ctx.setLineDash([4, 4]);
+  ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y1); ctx.stroke();
+  ctx.setLineDash([]); ctx.strokeStyle = color; ctx.lineWidth = lw;
+  ctx.beginPath();
+  const steps = Math.abs(w);
+  for (let i = 0; i <= steps; i += 2) {
+    const cx = x1 + (w >= 0 ? i : -i);
+    const cy = y1 - Math.sin((i / Math.max(1, Math.abs(w))) * Math.PI * 4) * amp;
+    if (i === 0) ctx.moveTo(cx, cy); else ctx.lineTo(cx, cy);
+  }
+  ctx.stroke(); ctx.restore();
+}
+function drawGraphEl(ctx, el) {
+  const { x, y, width, height, xMin, xMax, yMin, yMax, functions: fns, showGrid: g, xLabel, yLabel, title } = el;
+  ctx.save();
+  ctx.strokeStyle = "#334155"; ctx.lineWidth = 2; ctx.strokeRect(x, y, width, height);
+  if (g) {
+    ctx.strokeStyle = "#e2e8f0"; ctx.lineWidth = 0.5; ctx.setLineDash([2, 2]);
+    for (let i = 0; i <= 10; i++) { const gx = x + (width * i) / 10; ctx.beginPath(); ctx.moveTo(gx, y); ctx.lineTo(gx, y + height); ctx.stroke(); const gy = y + (height * i) / 10; ctx.beginPath(); ctx.moveTo(x, gy); ctx.lineTo(x + width, gy); ctx.stroke(); }
+    ctx.setLineDash([]);
+  }
+  const colors = ["#3b82f6", "#ef4444", "#10b981", "#f59e0b", "#8b5cf6"];
+  (fns || []).forEach((f, idx) => {
+    ctx.strokeStyle = colors[idx % colors.length]; ctx.lineWidth = 2; ctx.beginPath();
+    try {
+      const fn = compileFn(f);
+      let pen = false;
+      for (let px = 0; px <= width; px++) {
+        const xv = xMin + (px / width) * (xMax - xMin);
+        const yv = fn(xv);
+        const py = y + height - ((yv - yMin) / (yMax - yMin)) * height;
+        if (py < y - 10 || py > y + height + 10) { pen = false; continue; }
+        if (!pen) { ctx.moveTo(x + px, py); pen = true; } else ctx.lineTo(x + px, py);
+      }
+      ctx.stroke();
+    } catch {}
+  });
+  ctx.fillStyle = "#1e293b"; ctx.font = "12px sans-serif"; ctx.textAlign = "center";
+  if (xLabel) ctx.fillText(xLabel, x + width / 2, y + height + 18);
+  if (title) { ctx.font = "bold 14px sans-serif"; ctx.fillText(title, x + width / 2, y - 8); }
+  ctx.restore();
+}
+
+/* =========================================================================
+ * PROPERTIES PANEL (right side, contextual on selection)
+ * ========================================================================= */
+function PropertiesPanel({ el, update, commit, onDuplicate, onDelete }) {
+  const isLine = ["line", "arrow", "resistor", "capacitor", "inductor", "battery", "diode"].includes(el.type);
+  const isBox = ["rect", "rounded-rect", "parallelogram", "process", "terminator", "document", "and-gate", "or-gate", "not-gate", "nand-gate", "nor-gate", "xor-gate"].includes(el.type);
+  const isCircle = ["circle", "voltmeter", "ammeter", "connector"].includes(el.type);
+  const isPoly = ["rhombus", "pentagon", "hexagon", "star", "triangle", "decision"].includes(el.type);
+
+  return (
+    <div className="space-y-4">
+      <div className="visio-panel-soft rounded-md p-2.5">
+        <div className="flex items-center justify-between">
+          <span className="text-[11px] font-bold uppercase tracking-wide text-blue-700">{el.type}</span>
+          <span className="text-[10px] font-mono text-slate-400">{el.id}</span>
+        </div>
+      </div>
+
+      {/* Position / size */}
+      <section>
+        <h4 className="prop-label !mb-2">Geometry</h4>
+        <div className="grid grid-cols-2 gap-2">
+          {(isBox || isPoly || el.type === "text" || el.type === "graph" || el.type === "ellipse") && el.x !== undefined && (
+            <Field label="X" type="number" value={Math.round(el.x)} onChange={(v) => update("x", v)} onBlur={commit} />
+          )}
+          {(isBox || isPoly || el.type === "text" || el.type === "graph" || el.type === "ellipse") && el.y !== undefined && (
+            <Field label="Y" type="number" value={Math.round(el.y)} onChange={(v) => update("y", v)} onBlur={commit} />
+          )}
+          {(isCircle || isPoly) && el.radius !== undefined && (
+            <Field label="Radius" type="number" value={Math.round(el.radius)} onChange={(v) => update("radius", v)} onBlur={commit} />
+          )}
+          {el.type === "ellipse" && el.rx !== undefined && (
+            <Field label="RX" type="number" value={Math.round(el.rx)} onChange={(v) => update("rx", v)} onBlur={commit} />
+          )}
+          {el.type === "ellipse" && el.ry !== undefined && (
+            <Field label="RY" type="number" value={Math.round(el.ry)} onChange={(v) => update("ry", v)} onBlur={commit} />
+          )}
+          {el.type === "star" && el.innerRadius !== undefined && (
+            <Field label="Inner R" type="number" value={Math.round(el.innerRadius)} onChange={(v) => update("innerRadius", v)} onBlur={commit} />
+          )}
+          {(isBox || isPoly || el.type === "graph") && el.width !== undefined && (
+            <Field label="Width" type="number" value={Math.round(el.width)} onChange={(v) => update("width", v)} onBlur={commit} />
+          )}
+          {(isBox || isPoly || el.type === "graph") && el.height !== undefined && (
+            <Field label="Height" type="number" value={Math.round(el.height)} onChange={(v) => update("height", v)} onBlur={commit} />
+          )}
+          {el.type === "rounded-rect" && (
+            <Field label="Corner" type="number" value={Math.round(el.cornerRadius || 0)} onChange={(v) => update("cornerRadius", v)} onBlur={commit} />
+          )}
+          {isLine && el.x1 !== undefined && (
+            <>
+              <Field label="X1" type="number" value={Math.round(el.x1)} onChange={(v) => update("x1", v)} onBlur={commit} />
+              <Field label="Y1" type="number" value={Math.round(el.y1)} onChange={(v) => update("y1", v)} onBlur={commit} />
+              <Field label="X2" type="number" value={Math.round(el.x2)} onChange={(v) => update("x2", v)} onBlur={commit} />
+              <Field label="Y2" type="number" value={Math.round(el.y2)} onChange={(v) => update("y2", v)} onBlur={commit} />
+            </>
+          )}
+        </div>
+        {/* Rotation */}
+        <div className="mt-3">
+          <label className="prop-label">Rotation: {Math.round(el.rotation || 0)}°</label>
+          <input
+            type="range" min="-180" max="180" value={el.rotation || 0}
+            onChange={(e) => update("rotation", +e.target.value)}
+            onMouseUp={commit} onTouchEnd={commit}
+            className="w-full"
+          />
+          <div className="flex gap-1 mt-1">
+            <button onClick={() => { update("rotation", 0); commit(); }} className="ribbon-btn !text-[10px] !py-0.5">0°</button>
+            <button onClick={() => { update("rotation", 90); commit(); }} className="ribbon-btn !text-[10px] !py-0.5">90°</button>
+            <button onClick={() => { update("rotation", 180); commit(); }} className="ribbon-btn !text-[10px] !py-0.5">180°</button>
+            <button onClick={() => { update("rotation", -90); commit(); }} className="ribbon-btn !text-[10px] !py-0.5">-90°</button>
+          </div>
+        </div>
+      </section>
+
+      {/* Text */}
+      {el.type === "text" && (
+        <section>
+          <h4 className="prop-label !mb-2">Text</h4>
+          <div className="space-y-2">
+            <Field label="Content" type="text" value={el.text || ""} onChange={(v) => update("text", v)} onBlur={commit} />
+            <div className="grid grid-cols-2 gap-2">
+              <Field label="Font size" type="number" value={el.fontSize || 18} onChange={(v) => update("fontSize", v)} onBlur={commit} />
+              <div>
+                <label className="prop-label">Font</label>
+                <select value={el.fontFamily || "sans-serif"} onChange={(e) => update("fontFamily", e.target.value)} onBlur={commit} className="prop-input">
+                  <option value="sans-serif">Sans</option>
+                  <option value="serif">Serif</option>
+                  <option value="monospace">Mono</option>
+                  <option value="cursive">Cursive</option>
+                  <option value="Georgia">Georgia</option>
+                  <option value="Times New Roman">Times</option>
+                  <option value="Courier New">Courier</option>
+                </select>
+              </div>
+            </div>
+            <label className="flex items-center gap-2 text-[12px] cursor-pointer">
+              <input type="checkbox" checked={el.isLatex || false} onChange={(e) => { update("isLatex", e.target.checked); commit(); }} />
+              LaTeX formula
+            </label>
+          </div>
+        </section>
+      )}
+
+      {/* Style */}
+      <section>
+        <h4 className="prop-label !mb-2">Appearance</h4>
+        <div className="space-y-2.5">
+          <div>
+            <label className="prop-label">Stroke</label>
+            <div className="flex items-center gap-2">
+              <input type="color" value={el.strokeColor || "#000000"} onChange={(e) => update("strokeColor", e.target.value)} onBlur={commit} className="w-9 h-7 rounded border border-[var(--border-2)] cursor-pointer" />
+              <span className="text-[11px] font-mono text-slate-500">{(el.strokeColor || "#000000").toUpperCase()}</span>
+            </div>
+          </div>
+          {(isBox || isCircle || isPoly || el.type === "ellipse") && (
+            <div>
+              <label className="prop-label">Fill</label>
+              <div className="flex items-center gap-2">
+                <input type="color" value={el.fillColor === "transparent" ? "#ffffff" : el.fillColor} onChange={(e) => update("fillColor", e.target.value)} onBlur={commit} className="w-9 h-7 rounded border border-[var(--border-2)] cursor-pointer" />
+                <button onClick={() => { update("fillColor", "transparent"); commit(); }} className={cx("text-[11px] px-2 py-0.5 rounded", el.fillColor === "transparent" ? "bg-blue-600 text-white" : "bg-slate-200 text-slate-700")}>None</button>
+              </div>
+              {el.fillColor && el.fillColor !== "transparent" && (
+                <div className="mt-1.5">
+                  <label className="prop-label">Opacity: {Math.round((el.fillOpacity != null ? el.fillOpacity : 1) * 100)}%</label>
+                  <input type="range" min="0" max="100" value={Math.round((el.fillOpacity != null ? el.fillOpacity : 1) * 100)} onChange={(e) => update("fillOpacity", +e.target.value / 100)} onMouseUp={commit} className="w-full" />
+                </div>
+              )}
+            </div>
+          )}
+          {el.lineWidth !== undefined && (
+            <div>
+              <label className="prop-label">Line width: {el.lineWidth}px</label>
+              <input type="range" min="1" max="20" value={el.lineWidth} onChange={(e) => update("lineWidth", +e.target.value)} onMouseUp={commit} className="w-full" />
+            </div>
+          )}
+          <div className="flex flex-col gap-1.5">
+            {el.isDashed !== undefined && (
+              <label className="flex items-center gap-2 text-[12px] cursor-pointer">
+                <input type="checkbox" checked={el.isDashed || false} onChange={(e) => { update("isDashed", e.target.checked); commit(); }} /> Dashed line
+              </label>
+            )}
+            {(el.hasArrow !== undefined || isLine) && (
+              <label className="flex items-center gap-2 text-[12px] cursor-pointer">
+                <input type="checkbox" checked={el.hasArrow || el.type === "arrow" || false} onChange={(e) => { update("hasArrow", e.target.checked); commit(); }} disabled={el.type === "arrow"} /> Arrow head
+              </label>
+            )}
+          </div>
+        </div>
+      </section>
+
+      <div className="flex gap-2 pt-2 border-t border-[var(--border)]">
+        <button onClick={onDuplicate} className="flex-1 py-1.5 text-[12px] font-semibold rounded border border-blue-200 bg-blue-50 text-blue-700 hover:bg-blue-100">📋 Duplicate</button>
+        <button onClick={onDelete} className="flex-1 py-1.5 text-[12px] font-semibold rounded border border-red-200 bg-red-50 text-red-700 hover:bg-red-100">🗑️ Delete</button>
+      </div>
+    </div>
+  );
+}
+
+function Field({ label, type, value, onChange, onBlur }) {
+  return (
+    <div>
+      <label className="prop-label">{label}</label>
+      <input
+        type={type}
+        value={value}
+        onChange={(e) => onChange(type === "number" ? Number(e.target.value) : e.target.value)}
+        onBlur={onBlur}
+        className="prop-input"
+      />
+    </div>
+  );
+}
+
+function EmptyProps({ onOpenOutput, hasCode }) {
+  return (
+    <div className="text-center text-slate-400 text-[12px] py-6 space-y-3">
+      <div className="text-3xl">⬚</div>
+      <p className="font-medium text-slate-500">No selection</p>
+      <p>Click an element on the canvas to edit its properties. Click a shape in the left library, then click the canvas to place it.</p>
+      {hasCode && (
+        <button onClick={onOpenOutput} className="ribbon-btn !text-blue-600 mx-auto">↑ Open Code & Preview</button>
+      )}
+    </div>
+  );
+}
+
+/* =========================================================================
+ * GRAPHING MODE (Desmos-style)
+ * ========================================================================= */
+function GraphingMode({ functions, compiledFns, xRange, yRange, graphConfig, setGraphConfig, graphCanvasRef, graphContainerRef, onMove, onLeave, addFunction, updateFunction, removeFunction, setXRange, setYRange, error }) {
+  const setCfg = (patch) => setGraphConfig({ ...graphConfig, ...patch });
+  return (
+    <div className="flex-1 flex overflow-hidden">
+      {/* function list sidebar */}
+      <aside className="visio-panel w-72 flex-shrink-0 flex flex-col">
+        <div className="px-3 h-9 flex items-center justify-between border-b border-[var(--border)] bg-[var(--panel-2)]">
+          <span className="font-semibold text-[13px] text-slate-700">Functions</span>
+          <button onClick={addFunction} className="ribbon-btn !text-blue-600 !font-semibold">+ Add</button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-2 space-y-2">
+          {functions.map((f) => {
+            const compiled = compiledFns.find((c) => c.id === f.id);
+            return (
+              <div key={f.id} className="visio-panel-soft rounded-md p-2 space-y-2">
+                <div className="flex items-center gap-2">
+                  <input type="checkbox" checked={f.visible} onChange={(e) => updateFunction(f.id, { visible: e.target.checked })} title="Toggle visibility" />
+                  <input
+                    type="color"
+                    value={f.color}
+                    onChange={(e) => updateFunction(f.id, { color: e.target.value })}
+                    className="w-6 h-6 rounded border border-[var(--border-2)] cursor-pointer"
+                  />
+                  <span className="text-[11px] font-mono text-slate-400 flex-1">y =</span>
+                  <button onClick={() => removeFunction(f.id)} className="text-slate-400 hover:text-red-600 text-[14px] px-1">✕</button>
+                </div>
+                <input
+                  type="text"
+                  value={f.expr}
+                  onChange={(e) => updateFunction(f.id, { expr: e.target.value })}
+                  placeholder="e.g. sin(x) + 2"
+                  className="prop-input !font-mono"
+                />
+                {compiled?.error && (
+                  <p className="text-[10px] text-red-600">⚠ {compiled.error}</p>
+                )}
+              </div>
+            );
+          })}
+          {functions.length === 0 && (
+            <p className="text-center text-xs text-slate-400 py-6">No functions yet.<br />Click &ldquo;+ Add&rdquo; to plot one.</p>
+          )}
+        </div>
+
+        {/* axis range controls */}
+        <div className="border-t border-[var(--border)] p-3 space-y-2">
+          <h4 className="prop-label">X axis</h4>
+          <div className="flex items-center gap-2">
+            <input type="number" value={xRange[0]} onChange={(e) => setXRange([+e.target.value, xRange[1]])} className="prop-input" />
+            <span className="text-slate-400 text-xs">to</span>
+            <input type="number" value={xRange[1]} onChange={(e) => setXRange([xRange[0], +e.target.value])} className="prop-input" />
+          </div>
+          <h4 className="prop-label">Y axis</h4>
+          <div className="flex items-center gap-2">
+            <input type="number" value={yRange[0]} onChange={(e) => setYRange([+e.target.value, yRange[1]])} className="prop-input" />
+            <span className="text-slate-400 text-xs">to</span>
+            <input type="number" value={yRange[1]} onChange={(e) => setYRange([yRange[0], +e.target.value])} className="prop-input" />
+          </div>
+          <p className="text-[10px] text-slate-400 leading-relaxed pt-1">
+            Functions support: <code>sin cos tan sqrt abs exp ln log</code>, constants <code>pi e</code>, operators <code>+ − * / ^</code>, and implicit multiplication (<code>2x</code>).
+          </p>
+        </div>
+
+        {/* chart customization */}
+        <div className="border-t border-[var(--border)] p-3 space-y-2 overflow-y-auto">
+          <h4 className="prop-label">Chart Options</h4>
+          <Field label="Title" type="text" value={graphConfig.title} onChange={(v) => setCfg({ title: v })} />
+          <div className="grid grid-cols-2 gap-2">
+            <Field label="X label" type="text" value={graphConfig.xLabel} onChange={(v) => setCfg({ xLabel: v })} />
+            <Field label="Y label" type="text" value={graphConfig.yLabel} onChange={(v) => setCfg({ yLabel: v })} />
+          </div>
+          <div>
+            <label className="prop-label">Grid style</label>
+            <select value={graphConfig.gridStyle} onChange={(e) => setCfg({ gridStyle: e.target.value })} className="prop-input">
+              <option value="both">Major + Minor</option>
+              <option value="major">Major only</option>
+              <option value="none">None</option>
+            </select>
+          </div>
+          <div className="flex flex-wrap gap-x-3 gap-y-1">
+            <label className="flex items-center gap-1.5 text-[12px] cursor-pointer">
+              <input type="checkbox" checked={graphConfig.showMajorTicks} onChange={(e) => setCfg({ showMajorTicks: e.target.checked })} /> Major ticks
+            </label>
+            <label className="flex items-center gap-1.5 text-[12px] cursor-pointer">
+              <input type="checkbox" checked={graphConfig.showMinorTicks} onChange={(e) => setCfg({ showMinorTicks: e.target.checked })} /> Minor ticks
+            </label>
+          </div>
+          <div className="flex flex-wrap gap-x-3 gap-y-1">
+            <label className="flex items-center gap-1.5 text-[12px] cursor-pointer">
+              <input type="checkbox" checked={graphConfig.showLegend} onChange={(e) => setCfg({ showLegend: e.target.checked })} /> Legend
+            </label>
+            <label className="flex items-center gap-1.5 text-[12px] cursor-pointer">
+              <input type="checkbox" checked={graphConfig.showDataLabels} onChange={(e) => setCfg({ showDataLabels: e.target.checked })} /> Data labels
+            </label>
+          </div>
+          {graphConfig.showLegend && (
+            <div>
+              <label className="prop-label">Legend position</label>
+              <select value={graphConfig.legendPosition} onChange={(e) => setCfg({ legendPosition: e.target.value })} className="prop-input">
+                <option value="north east">Top right</option>
+                <option value="north west">Top left</option>
+                <option value="south east">Bottom right</option>
+                <option value="south west">Bottom left</option>
+              </select>
+            </div>
+          )}
+        </div>
+      </aside>
+
+      {/* plot canvas */}
+      <div className="flex-1 p-3 flex flex-col">
+        <div className="flex items-center gap-3 mb-2 text-[11px] text-slate-500">
+          <span className="px-2 py-0.5 rounded-full bg-violet-100 text-violet-700 font-semibold">Graphing Mode</span>
+          <span>Hover the plot to inspect values. Output uses pgfplots.</span>
+        </div>
+        <div ref={graphContainerRef} className="flex-1 rounded-lg border border-[var(--border)] bg-white overflow-hidden">
+          <canvas ref={graphCanvasRef} onMouseMove={onMove} onMouseLeave={onLeave} className="w-full h-full" />
+        </div>
+        {error && (
+          <div className="mt-2 bg-red-50 border border-red-200 text-red-700 px-3 py-2 rounded-md text-xs">{error}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+

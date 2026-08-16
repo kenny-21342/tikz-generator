@@ -10,6 +10,9 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Historical snapshots, kept for reference outside the app tree so Next never
+    // bundles or type-checks them.
+    "archive/**",
   ]),
 ]);
 
