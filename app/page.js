@@ -1079,7 +1079,7 @@ function generateTikzLocal(state) {
   if (needs.arrows) reqs.push("arrows.meta");
   const comment = reqs.length ? `% Requires: ${reqs.join(", ")}\n` : "";
 
-  return comment + lines.join("\n");
+  return { code: comment + lines.join("\n"), reqs };
 }
 
 /* =========================================================================
@@ -1154,7 +1154,6 @@ export default function TikzApp() {
   const [codeSource, setCodeSource] = useState("canvas");
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
-  const [previewImage, setPreviewImage] = useState(null);
   const [renderingPreview, setRenderingPreview] = useState(false);
   const [previewProgress, setPreviewProgress] = useState(0);
   const [previewStatus, setPreviewStatus] = useState("");
@@ -2080,9 +2079,9 @@ export default function TikzApp() {
   const generatedCode = useMemo(() => {
     if (!hasCodeSource) return "";
     if (mode === "graph") {
-      return generateTikzLocal({ mode, functions: visibleFunctions, xRange, yRange, graphConfig, projectName, canvasHeight: canvasH });
+      return generateTikzLocal({ mode, functions: visibleFunctions, xRange, yRange, graphConfig, projectName, canvasHeight: canvasH }).code;
     }
-    return generateTikzLocal({ mode, elements: sanitize(elements), projectName, canvasHeight: canvasH });
+    return generateTikzLocal({ mode, elements: sanitize(elements), projectName, canvasHeight: canvasH }).code;
   }, [hasCodeSource, mode, elements, visibleFunctions, xRange, yRange, graphConfig, projectName, canvasH]);
 
   // Local deterministic code generation (no AI — instant, no network).
@@ -2171,37 +2170,109 @@ export default function TikzApp() {
   const previewResetRef = useRef(null);
   useEffect(() => () => clearTimeout(previewResetRef.current), []);
 
+  // TikZJax renders previews entirely in the browser (WebAssembly TeX), so the
+  // app runs on any static host — no pdflatex on the server. The engine runs
+  // inside a hidden iframe (/tj/preview-host.html) for browsing-context
+  // isolation: the React app's globals and re-renders do not interfere with
+  // the TeX worker, which is what made in-page injection flaky. The iframe
+  // posts back the serialized SVG (or an error) via postMessage.
+  const [previewSvg, setPreviewSvg] = useState(null); // serialized SVG string
+  const previewNonceRef = useRef(0);
+  const previewHostRef = useRef(null); // { iframe, ready: Promise, resolveReady }
+  const previewListenersRef = useRef(new Map()); // id -> { resolve, reject }
+
+  // Bubble postMessage from the iframe into pending render promises.
+  useEffect(() => {
+    const onMessage = (ev) => {
+      if (!ev.data || typeof ev.data !== "object") return;
+      const { type, id, svg, error } = ev.data;
+      if (type === "tikzjax-ready") {
+        previewHostRef.current?.resolveReady?.();
+      } else if (type === "tikz-done" && id) {
+        const waiter = previewListenersRef.current.get(id);
+        if (!waiter) return;
+        previewListenersRef.current.delete(id);
+        if (error) waiter.reject(new Error(error));
+        else waiter.resolve(svg);
+      } else if (type === "tikzjax-error") {
+        previewHostRef.current?.rejectReady?.(new Error(error || "engine failed to load"));
+      }
+    };
+    window.addEventListener("message", onMessage);
+    return () => window.removeEventListener("message", onMessage);
+  }, []);
+
+  const ensureTikzjax = useCallback(() => {
+    if (previewHostRef.current?.ready) return previewHostRef.current.ready;
+    let resolveReady, rejectReady;
+    const ready = new Promise((res, rej) => { resolveReady = res; rejectReady = rej; });
+    const iframe = document.createElement("iframe");
+    iframe.src = "/tj/preview-host.html";
+    iframe.style.cssText = "position:absolute;left:-99999px;top:0;width:1px;height:1px;border:0;";
+    iframe.setAttribute("aria-hidden", "true");
+    iframe.setAttribute("tabindex", "-1");
+    document.body.appendChild(iframe);
+    previewHostRef.current = { iframe, ready, resolveReady, rejectReady };
+    // If the engine never signals ready (e.g. blocked), fail after 30s.
+    setTimeout(() => rejectReady(new Error("The TikZJax preview engine failed to load. Check your connection and try again.")), 30000);
+    return ready;
+  }, []);
+
   const renderPreview = async () => {
     if (!tikzCode) { setError("No TikZ code to render."); return; }
     if (tikzCode.length > MAX_TIKZ_CHARS) {
       setError(`This diagram is too large to preview (over ${MAX_TIKZ_CHARS.toLocaleString()} characters of TikZ). You can still copy or download the code.`);
       return;
     }
-    setRenderingPreview(true); setError(null); setPreviewProgress(0);
-    setPreviewStatus("Preparing LaTeX document...");
+    setError(null);
+    setRenderingPreview(true);
+    setPreviewSvg(null);
+    setPreviewProgress(0);
+    setPreviewStatus("Loading TikZJax engine...");
+    const nonce = ++previewNonceRef.current;
     let progressTimer = null;
     try {
-      progressTimer = setInterval(() => setPreviewProgress((p) => Math.min(p + 10, 90)), 200);
-      setPreviewStatus("Compiling with pdflatex...");
-      const res = await fetch("/api/render-tikz", { method: "POST", headers: { "Content-Type": "application/json" }, body: safeStringify({ tikzCode }) });
-      const payload = await res.json().catch(() => ({}));
-      if (!res.ok || payload.error) {
-        const detail = payload.details || payload.errorContext || payload.rawOutput;
-        throw new Error(detail ? `${payload.error || "Render failed"}\n${detail}` : (payload.error || "Render failed"));
+      await ensureTikzjax();
+      if (nonce !== previewNonceRef.current) return;
+      setPreviewStatus("Compiling with TikZJax...");
+      progressTimer = setInterval(() => setPreviewProgress((p) => Math.min(p + 8, 90)), 250);
+
+      // Strip the leading `% Requires:` comment and rebuild package / library
+      // lists the generator already computed. TikZJax ships pgfplots and the
+      // tikz libraries but not circuitikz.sty, so let TeX report that itself.
+      const body = tikzCode.replace(/^%\s*Requires:[^\n]*\n/, "").trim();
+      const reqMatch = tikzCode.match(/^%\s*Requires:\s*(.+)$/m);
+      const reqs = reqMatch ? reqMatch[1].split(/,\s*/) : [];
+      const packages = {};
+      const libs = [];
+      for (const r of reqs) {
+        if (r === "pgfplots") packages.pgfplots = "";
+        else if (r === "circuitikz") packages.circuitikz = "";
+        else libs.push(r);
       }
-      setPreviewStatus("Done");
+      const preamble = packages.pgfplots !== undefined ? "\n\\pgfplotsset{compat=1.18}\n" : "";
+
+      const id = String(nonce);
+      const svg = await new Promise((resolve, reject) => {
+        previewListenersRef.current.set(id, { resolve, reject });
+        previewHostRef.current.iframe.contentWindow.postMessage(
+          { type: "tikz-render", id, code: body, packages, libraries: libs, preamble },
+          "*",
+        );
+      });
+      if (nonce !== previewNonceRef.current) return;
+      setPreviewSvg(svg);
       setPreviewProgress(100);
-      setPreviewImage(payload.image);
+      setPreviewStatus("Done");
       clearTimeout(previewResetRef.current);
-      previewResetRef.current = setTimeout(() => {
-        setPreviewStatus("");
-        setPreviewProgress(0);
-      }, 500);
+      previewResetRef.current = setTimeout(() => { setPreviewStatus(""); setPreviewProgress(0); }, 500);
     } catch (err) {
-      setError(err.message || "Failed to render preview"); setPreviewProgress(0); setPreviewStatus("");
+      if (nonce !== previewNonceRef.current) return;
+      setError(err.message || "Failed to render preview");
+      setPreviewProgress(0); setPreviewStatus("");
     } finally {
       if (progressTimer) clearInterval(progressTimer);
-      setRenderingPreview(false);
+      if (nonce === previewNonceRef.current) setRenderingPreview(false);
     }
   };
 
@@ -2849,7 +2920,7 @@ export default function TikzApp() {
                         <button onClick={renderPreview} disabled={!tikzCode || renderingPreview} className="tm-btn tm-btn-ghost !h-7 disabled:opacity-40">
                           {renderingPreview ? <span className="spinner spinner-dark" /> : <Icon name="play" />} Render
                         </button>
-                        {previewImage && (
+                        {previewSvg && (
                           <div className="flex items-center gap-1">
                             <button onClick={() => setPreviewZoom((z) => Math.max(0.1, (typeof z === "number" ? z : 1) - 0.1))} className="tm-btn tm-btn-ghost !h-6 !px-1.5" title="Zoom out">−</button>
                             <span className="text-[11px] font-mono w-9 text-center text-slate-500">{typeof previewZoom === "number" ? Math.round(previewZoom * 100) + "%" : "Fit"}</span>
@@ -2870,9 +2941,9 @@ export default function TikzApp() {
                         <div className="flex justify-between text-xs text-slate-600 mb-1"><span>{previewStatus}</span><span className="font-semibold text-blue-600">{previewProgress}%</span></div>
                         <div className="w-full bg-slate-200 rounded-full h-1.5"><div className="bg-blue-600 h-1.5 transition-all" style={{ width: `${previewProgress}%` }} /></div>
                       </div>
-                    ) : previewImage ? (
+                    ) : previewSvg ? (
                       <div ref={previewWrapRef} className="h-full w-full overflow-auto bg-slate-50 grid place-items-center" style={{ minHeight: 0 }}>
-                        <PreviewImage src={previewImage} zoom={previewZoom} wrapRef={previewWrapRef} />
+                        <PreviewSvg svg={previewSvg} zoom={previewZoom} wrapRef={previewWrapRef} />
                       </div>
                     ) : (
                       <div className="grid place-items-center h-full text-slate-400 text-sm">{tikzCode ? "No preview yet" : "No TikZ code yet"}</div>
@@ -3823,20 +3894,31 @@ function GraphingMode({ functions, compiledFns, xRange, yRange, graphConfig, set
   );
 }
 
-/* Preview image with zoom support. "fit" mode auto-scales to container. */
-function PreviewImage({ src, zoom, wrapRef }) {
-  const [natural, setNatural] = useState({ w: 0, h: 0 });
+/* Preview rendered by TikZJax as an SVG string. "fit" auto-scales to the
+   container. The SVG is the app's own compiled TikZ output (paths + text),
+   never arbitrary HTML, so it is safe to inject via dangerouslySetInnerHTML. */
+function PreviewSvg({ svg, zoom, wrapRef }) {
   const [wrapSize, setWrapSize] = useState({ w: 0, h: 0 });
 
-  useEffect(() => {
-    const img = new window.Image();
-    img.onload = () => setNatural({ w: img.naturalWidth, h: img.naturalHeight });
-    img.src = src;
-  }, [src]);
+  const natural = useMemo(() => {
+    const m = svg.match(/\bviewBox=["']([^"']+)["']/);
+    let w = 0, h = 0;
+    if (m) {
+      const parts = m[1].trim().split(/[\s,]+/).map(Number);
+      if (parts.length === 4) { w = parts[2]; h = parts[3]; }
+    }
+    if (!w || !h) {
+      const wm = svg.match(/\bwidth=["']?([\d.]+)pt["']?/);
+      const hm = svg.match(/\bheight=["']?([\d.]+)pt["']?/);
+      w = wm ? parseFloat(wm[1]) : 0;
+      h = hm ? parseFloat(hm[1]) : 0;
+    }
+    return { w, h };
+  }, [svg]);
 
   useEffect(() => {
     const measure = () => {
-      const w = wrapRef.current;
+      const w = wrapRef?.current;
       if (w) setWrapSize({ w: w.clientWidth, h: w.clientHeight });
     };
     measure();
@@ -3853,20 +3935,16 @@ function PreviewImage({ src, zoom, wrapRef }) {
   }, [zoom, natural, wrapSize]);
 
   return (
-    <NextImage
-      src={src}
-      alt="Preview"
-      width={Math.max(1, natural.w)}
-      height={Math.max(1, natural.h)}
-      unoptimized
+    <div
       style={{
         transform: `scale(${actualZoom})`,
         transformOrigin: "center center",
-        width: natural.w ? "auto" : "1px",
-        height: natural.h ? "auto" : "1px",
+        width: natural.w || "auto",
+        height: natural.h || "auto",
         maxWidth: "none",
         maxHeight: "none",
       }}
+      dangerouslySetInnerHTML={{ __html: svg }}
     />
   );
 }

@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TikZJax preview host</title>
+<link rel="stylesheet" href="/tikzjax/fonts.css">
+<style>html,body{margin:0;height:100%}#stage{position:absolute;left:-99999px;top:0;width:0;height:0;overflow:hidden}</style>
+</head>
+<body>
+<div id="stage"></div>
+<script>
+// Engine loads eagerly so the first user Render is fast. The MutationObserver
+// inside tikzjax.js scans for <script type="text/tikz"> added to the DOM.
+(function () {
+  var s = document.createElement("script");
+  s.src = "/tikzjax/tikzjax.js";
+  s.defer = true;
+  s.onload = function () { parent.postMessage({ type: "tikzjax-ready" }, "*"); };
+  s.onerror = function () { parent.postMessage({ type: "tikzjax-error", error: "engine failed to load" }, "*"); };
+  document.head.appendChild(s);
+})();
+
+var pending = null;
+
+window.addEventListener("message", function (ev) {
+  var msg = ev.data;
+  if (!msg || msg.type !== "tikz-render" || !msg.id) return;
+  pending = msg.id;
+  var stage = document.getElementById("stage");
+  // Clear any previous render.
+  stage.innerHTML = "";
+  var script = document.createElement("script");
+  script.type = "text/tikz";
+  if (msg.packages && Object.keys(msg.packages).length) script.setAttribute("data-tex-packages", JSON.stringify(msg.packages));
+  if (msg.libraries && msg.libraries.length) script.setAttribute("data-tikz-libraries", msg.libraries.join(","));
+  if (msg.preamble) script.setAttribute("data-add-to-preamble", msg.preamble);
+  script.textContent = msg.code;
+  stage.appendChild(script);
+
+  // Resolve on the final SVG (loader spinner has <animate>, the result does not).
+  function onLoad(ev2) {
+    var target = ev2.target;
+    if (!target || target.tagName !== "svg" || target.querySelector("animate")) return;
+    document.removeEventListener("tikzjax-load-finished", onLoad);
+    parent.postMessage({ type: "tikz-done", id: pending, svg: new XMLSerializer().serializeToString(target) }, "*");
+  }
+  document.addEventListener("tikzjax-load-finished", onLoad);
+
+  // Detect the error placeholder TikZJax swaps in on compile failure.
+  var obs = new MutationObserver(function () {
+    if (stage.querySelector('img[src*="invalid.site"]')) {
+      obs.disconnect();
+      parent.postMessage({ type: "tikz-done", id: pending, error: "TikZJax could not compile this TikZ. Check the code for errors." }, "*");
+    }
+  });
+  obs.observe(stage, { childList: true, subtree: true });
+
+  // Safety timeout.
+  setTimeout(function () {
+    if (pending === msg.id) {
+      parent.postMessage({ type: "tikz-done", id: pending, error: "TikZJax did not finish in time. The diagram may be too complex." }, "*");
+    }
+  }, 90000);
+});
+</script>
+</body>
+</html>

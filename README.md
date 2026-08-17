@@ -20,14 +20,14 @@ A professional web application for creating LaTeX TikZ and CircuiTikZ diagrams. 
   - Copy to clipboard
   - Download as .tex file
 - **AI Image-to-TikZ**: Upload a screenshot or diagram and the server reproduces it as compile-ready TikZ (requires an API key)
-- **Live Preview**: Server-side LaTeX compilation (pdflatex) rendered to PNG with zoom controls
+- **Live Preview**: Client-side LaTeX rendering via [TikZJax](https://github.com/drgrice1/tikzjax) (WebAssembly TeX) with zoom controls — works on any static host, including Vercel
 
 ## Tech Stack
 
 - **Framework**: Next.js 16 (App Router)
 - **AI Model**: Configurable Gemini / OpenAI-compatible model (only used for image-to-TikZ conversion)
 - **Styling**: Tailwind CSS 4
-- **Rendering**: Server-side pdflatex, converted to PNG via pdftoppm / sips / ImageMagick
+- **Rendering**: TikZJax (WebAssembly TeX) in the browser, isolated in a hidden iframe; no server-side TeX required
 
 ## Getting Started
 
@@ -36,8 +36,10 @@ A professional web application for creating LaTeX TikZ and CircuiTikZ diagrams. 
 - Node.js 18+
 - An API key for image-to-TikZ conversion — Gemini (`GEMINI_API_KEY`) or any
   OpenAI-compatible proxy. Diagram and graph generation work without a key.
-- A TeX distribution (`pdflatex`) plus a PDF→PNG converter (`pdftoppm`,
-  macOS `sips`, or ImageMagick) for the preview renderer.
+- No TeX distribution is needed: previews compile in the browser via TikZJax
+  (served from `public/tikzjax/` and `public/tj/preview-host.html`). The legacy
+  `pdflatex` render route (`/api/render-tikz`) is only useful when
+  self-hosting with a TeX distribution installed; the UI does not call it.
 
 ### Installation
 
@@ -106,8 +108,8 @@ npm start
 ### Environment Variables
 
 Make sure to set `GEMINI_API_KEY` (or `GEMINI_AUTH_KEY` / `ANTHROPIC_API_KEY` for
-proxies) in your production environment. The preview renderer requires a TeX
-distribution and a PDF→PNG converter on the server PATH.
+proxies) in your production environment. Live preview is client-side (TikZJax),
+so no server-side TeX is required on Vercel.
 
 AI generation also supports these optional spend controls:
 
