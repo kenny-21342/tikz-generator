@@ -257,6 +257,12 @@ textarea:disabled,
   background: var(--accent);
 }
 
+/* Panel resizers must capture the whole drag gesture on touch devices. */
+.resizer-h,
+.resizer-v {
+  touch-action: none;
+}
+
 /* Code editor look */
 .code-area {
   font-family: var(--font-mono), "SFMono-Regular", Menlo, Consolas, monospace;
@@ -342,6 +348,30 @@ textarea:disabled,
   background: var(--panel);
   border-bottom: 1px solid var(--border);
   flex-shrink: 0;
+  /* On iPad portrait the full control set is wider than the viewport; let the
+     bar scroll sideways instead of pushing buttons off-screen unreachable. */
+  overflow-x: auto;
+  overflow-y: hidden;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: none;
+}
+.tm-topbar::-webkit-scrollbar {
+  display: none;
+}
+
+/* Kill the iOS double-tap-zoom delay on every tap target in the chrome. */
+.tm-topbar button,
+.tm-tool,
+.tm-btn,
+.tm-segmented button,
+.ribbon-btn,
+.shape-tile,
+.tm-cat-tab,
+.tm-shape-tile,
+.tm-zoom button,
+.tm-zoom span,
+.tm-dock-head button {
+  touch-action: manipulation;
 }
 .tm-brand {
   font-weight: 700;

@@ -1361,11 +1361,11 @@ export default function TikzApp() {
       resizingOutputRef.current = false;
       document.body.style.cursor = "";
     };
-    window.addEventListener("mousemove", onMove);
-    window.addEventListener("mouseup", onUp);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
     return () => {
-      window.removeEventListener("mousemove", onMove);
-      window.removeEventListener("mouseup", onUp);
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", onUp);
     };
   }, []);
 
@@ -1628,6 +1628,7 @@ export default function TikzApp() {
   // Eraser supports click *and* drag, so a stroke across several shapes removes them all.
   const erasingRef = useRef(false);
   const activePenPointerRef = useRef(null);
+  const pointerDownRef = useRef(null);
   const isPalmPointer = (e) => e.pointerType === "touch" && activePenPointerRef.current !== null;
   const eraseAt = (x, y) => {
     const id = elementAt(x, y);
@@ -1642,7 +1643,15 @@ export default function TikzApp() {
     else if (isPalmPointer(e)) { e.preventDefault(); return; }
     // Capture pointer so move/up events keep firing even outside the canvas
     // (essential for drag-to-rotate and drag-to-resize at edges).
-    try { e.currentTarget.setPointerCapture(e.pointerId); } catch {}
+    //
+    // Capturing is deferred for pen/touch: on iPadOS, setPointerCapture on a
+    // stationary tap can leave the capture stuck on the canvas after the tap
+    // ends, which then swallows every later tap on the toolbar (WebKit
+    // pointer-capture bug). Mouse pointers capture immediately.
+    pointerDownRef.current = { id: e.pointerId, x: e.clientX, y: e.clientY, captured: false };
+    if (e.pointerType === "mouse") {
+      try { e.currentTarget.setPointerCapture(e.pointerId); pointerDownRef.current.captured = true; } catch {}
+    }
     const { x, y, pressure } = getCoords(e);
 
     // Middle-mouse or space-drag pans the viewport, whatever tool is active.
@@ -1740,6 +1749,13 @@ export default function TikzApp() {
 
   const onPointerMove = (e) => {
     if (isPalmPointer(e)) return;
+    // Promote the deferred capture to a real one once the pointer has actually
+    // moved past a tiny threshold (a real drag, not a tap). See onPointerDown.
+    const p = pointerDownRef.current;
+    if (p && !p.captured && p.id === e.pointerId &&
+        Math.hypot(e.clientX - p.x, e.clientY - p.y) > 3) {
+      try { e.currentTarget.setPointerCapture(e.pointerId); p.captured = true; } catch {}
+    }
     // Viewport panning takes priority over any tool.
     if (panStartRef.current) {
       const s = panStartRef.current;
@@ -2006,6 +2022,7 @@ export default function TikzApp() {
     if (e.pointerType === "pen" && activePenPointerRef.current === e.pointerId) {
       activePenPointerRef.current = null;
     }
+    pointerDownRef.current = null;
     try { e.currentTarget.releasePointerCapture(e.pointerId); } catch {}
     if (panStartRef.current) { panStartRef.current = null; return; }
     if (erasingRef.current) {
@@ -2045,6 +2062,7 @@ export default function TikzApp() {
     if (e.pointerType === "pen" && activePenPointerRef.current === e.pointerId) {
       activePenPointerRef.current = null;
     }
+    pointerDownRef.current = null;
     try { e.currentTarget.releasePointerCapture(e.pointerId); } catch {}
     panStartRef.current = null;
     erasingRef.current = false;
@@ -2812,7 +2830,7 @@ export default function TikzApp() {
                   role="separator"
                   aria-orientation="horizontal"
                   aria-label="Resize code panel"
-                  onMouseDown={(e) => { e.preventDefault(); resizingOutputRef.current = true; document.body.style.cursor = "row-resize"; }}
+                  onPointerDown={(e) => { e.preventDefault(); try { e.currentTarget.setPointerCapture(e.pointerId); } catch {}; resizingOutputRef.current = true; document.body.style.cursor = "row-resize"; }}
                 />
                 <div style={{ height: outputHeight }} className="tm-dock">
                   <div className="tm-dock-head">
@@ -2873,7 +2891,7 @@ export default function TikzApp() {
                 role="separator"
                 aria-orientation="vertical"
                 aria-label="Resize properties panel"
-                onMouseDown={(e) => { e.preventDefault(); resizingRightRef.current = true; document.body.style.cursor = "col-resize"; }}
+                onPointerDown={(e) => { e.preventDefault(); try { e.currentTarget.setPointerCapture(e.pointerId); } catch {}; resizingRightRef.current = true; document.body.style.cursor = "col-resize"; }}
               />
               <aside style={{ width: rightWidth }} className="tm-right">
                 <div className="tm-right-head">
