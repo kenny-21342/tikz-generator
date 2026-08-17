@@ -1423,7 +1423,7 @@ export default function TikzApp() {
       } else if ((e.key === "Delete" || e.key === "Backspace") && !inField) {
         e.preventDefault(); deleteSelected();
       } else if (e.key === "Escape") {
-        setSelectedId(null); setPendingShape(null); setTool("select");
+        setSelectedId(null); setPendingShape(null); setTool("select"); setShapePopoverOpen(false);
       } else if (!inField && mode === "diagram") {
         if (key === "v") { setTool("select"); setPendingShape(null); }
         else if (key === "p") { setTool("pen"); setPendingShape(null); }
