@@ -1,5 +1,4 @@
 "use client";
-import NextImage from "next/image";
 import { useRef, useState, useEffect, useMemo, useCallback } from "react";
 
 /* =========================================================================
@@ -452,18 +451,11 @@ const safeStringify = (value) => JSON.stringify(value, (key, val) => {
   return val;
 });
 
-// Client-side payload caps. These mirror the server limits in
-// app/api/generate-tikz/route.js and app/api/render-tikz/route.js so an
-// oversized request fails fast with a readable message instead of being
-// uploaded only to come back as a 413. The server still enforces its own
-// copies — these are for the user experience, not for security.
-const MAX_IMAGE_FILE_BYTES = 8 * 1024 * 1024;   // raw image file
-const MAX_AI_PAYLOAD_CHARS = 13 * 1024 * 1024;  // serialized body to /api/generate-tikz
-const MAX_TIKZ_CHARS = 200_000;                 // matches MAX_TIKZ_LENGTH server-side
+// Client-side size caps. Everything runs in the browser now — code generation is
+// deterministic and previews compile via TikZJax — so these exist purely to fail
+// fast with a readable message instead of wedging the tab on a huge input.
+const MAX_TIKZ_CHARS = 200_000;
 const MAX_PROJECT_FILE_BYTES = 25 * 1024 * 1024; // .tikz.json import
-const SUPPORTED_IMAGE_TYPES = new Set([
-  "image/png", "image/jpeg", "image/gif", "image/webp", "image/bmp",
-]);
 
 const PROJECT_STORAGE_KEY = "tikz-autosave";
 const LAST_CODE_STORAGE_KEY = "tikz-last-code";
@@ -1152,7 +1144,6 @@ export default function TikzApp() {
   // "canvas" = mirrors the deterministic generator; "external" = imported from an
   // image or recovered from storage, and must not be overwritten by regeneration.
   const [codeSource, setCodeSource] = useState("canvas");
-  const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
   const [renderingPreview, setRenderingPreview] = useState(false);
   const [previewProgress, setPreviewProgress] = useState(0);
@@ -2084,42 +2075,11 @@ export default function TikzApp() {
     return generateTikzLocal({ mode, elements: sanitize(elements), projectName, canvasHeight: canvasH }).code;
   }, [hasCodeSource, mode, elements, visibleFunctions, xRange, yRange, graphConfig, projectName, canvasH]);
 
-  // Local deterministic code generation (no AI — instant, no network).
-  // For image uploads, fall back to the Gemini API route.
-  const generateTikZ = async (overrideImage = null) => {
+  // Code generation is entirely local and deterministic: the TikZ is derived from
+  // the relative positions of the elements on the canvas, so it is instant, works
+  // offline, and always round-trips to exactly what was drawn.
+  const generateTikZ = () => {
     setError(null);
-
-    if (overrideImage) {
-      // Image path still uses AI vision
-      setLoading(true);
-      try {
-        const payload = safeStringify({ image: overrideImage, projectName });
-        if (!payload) throw new Error("Could not prepare the image for upload.");
-        // Fail before the round-trip rather than letting the server 413 us.
-        if (payload.length > MAX_AI_PAYLOAD_CHARS) {
-          throw new Error("That image is too large to convert. Try one under 8 MB.");
-        }
-        const res = await fetch("/api/generate-tikz", { method: "POST", headers: { "Content-Type": "application/json" }, body: payload });
-        // The route explains rate limits and size caps in `error`; surface that
-        // text instead of flattening every failure to a bare status code.
-        const data = await res.json().catch(() => null);
-        if (!res.ok) throw new Error(data?.error || `The server rejected that request (HTTP ${res.status}).`);
-        if (!data) throw new Error("The server returned an unreadable response.");
-        if (data.error) throw new Error(data.error);
-        // Imported code is not derived from the canvas, so pin it until the user
-        // edits the canvas again (see the regeneration effect below).
-        setCodeSource("external");
-        setTikzCode(data.tikzCode);
-        setOutputOpen(true); setOutputTab("code");
-      } catch (err) {
-        setError(err.message || "Failed to generate TikZ code");
-      } finally {
-        setLoading(false);
-      }
-      return;
-    }
-
-    // Local deterministic generation — explicitly requested, so take back over.
     setCodeSource("canvas");
     setTikzCode(generatedCode);
     setOutputOpen(true);
@@ -2141,31 +2101,6 @@ export default function TikzApp() {
     if (firstEditRef.current) { firstEditRef.current = false; return; }
     setCodeSource("canvas");
   }, [elements, functions, xRange, yRange, graphConfig, mode]);
-
-  // Image upload → direct TikZ generation (bypasses canvas)
-  const [imagePreview, setImagePreview] = useState(null); // data URL while confirming
-  const onImagePick = (e) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (!SUPPORTED_IMAGE_TYPES.has(file.type.toLowerCase())) {
-      setError("Please choose a PNG, JPEG, GIF, WebP, or BMP image.");
-      return;
-    }
-    if (file.size > MAX_IMAGE_FILE_BYTES) {
-      setError(`Image must be under 8 MB — that file is ${(file.size / (1024 * 1024)).toFixed(1)} MB.`);
-      return;
-    }
-    const reader = new FileReader();
-    reader.onload = (ev) => setImagePreview(ev.target.result);
-    reader.onerror = () => setError("Could not read that image file. It may be corrupt or unreadable.");
-    reader.readAsDataURL(file);
-    e.target.value = ""; // allow re-picking same file
-  };
-  const confirmImageGenerate = async () => {
-    if (!imagePreview) return;
-    setImagePreview(null);
-    await generateTikZ(imagePreview);
-  };
 
   const previewResetRef = useRef(null);
   useEffect(() => () => clearTimeout(previewResetRef.current), []);
@@ -2812,10 +2747,6 @@ export default function TikzApp() {
         {mode === "diagram" && (
           <button className="tm-btn tm-btn-ghost tip" data-tip="Export PNG" onClick={exportPNG}><Icon name="image" /></button>
         )}
-        <label className="tm-btn tm-btn-ghost tip cursor-pointer" data-tip="Upload image → TikZ" tabIndex={0} role="button" onKeyDown={onFileLabelKeyDown}>
-          <Icon name="upload" />
-          <input type="file" accept="image/*" onChange={onImagePick} className="hidden" />
-        </label>
 
         {/* panel toggles */}
         <button className={cx("tm-tool tip", rightPanelOpen && "is-active")} data-tip="Properties panel" onClick={() => setRightPanelOpen((v) => !v)}>
@@ -2828,12 +2759,11 @@ export default function TikzApp() {
         <div className="tm-divider" />
         <button
           onClick={() => { generateTikZ(); }}
-          disabled={loading || !hasCodeSource}
-          aria-busy={loading ? "true" : undefined}
+          disabled={!hasCodeSource}
           className="tm-btn tm-btn-primary"
         >
-          {loading ? <span className="spinner" /> : <Icon name="code" />}
-          <span>{loading ? "Generating..." : "View Code"}</span>
+          <Icon name="code" />
+          <span>View Code</span>
         </button>
       </header>
 
@@ -3068,29 +2998,6 @@ export default function TikzApp() {
         </div>
       )}
 
-      {/* Image upload preview / confirm modal */}
-      {imagePreview && (
-        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={() => !loading && setImagePreview(null)}>
-          <div className="bg-white rounded-xl shadow-2xl max-w-lg w-full overflow-hidden" onClick={(e) => e.stopPropagation()}>
-            <div className="px-5 py-3 border-b border-[var(--border)] flex items-center justify-between">
-              <h3 className="font-semibold text-[14px]">Generate TikZ from image</h3>
-              <button onClick={() => !loading && setImagePreview(null)} className="text-slate-400 hover:text-slate-600" disabled={loading}>✕</button>
-            </div>
-            <div className="p-5">
-              <p className="text-[12px] text-slate-500 mb-3">AI will analyze this image and produce TikZ code that reproduces it. The code will appear in the Code panel — your canvas is not affected.</p>
-              <div className="relative h-80 rounded-lg border border-[var(--border)] overflow-hidden bg-[var(--canvas-bg)]">
-                <NextImage src={imagePreview} alt="Upload preview" fill unoptimized sizes="(max-width: 768px) 100vw, 512px" className="object-contain" />
-              </div>
-            </div>
-            <div className="px-5 py-3 border-t border-[var(--border)] flex justify-end gap-2 bg-[var(--panel-2)]">
-              <button onClick={() => setImagePreview(null)} className="tm-btn" disabled={loading}>Cancel</button>
-              <button onClick={confirmImageGenerate} disabled={loading} className="tm-btn tm-btn-primary">
-                {loading ? <><span className="spinner" /> Analyzing…</> : <><Icon name="sparkles" /> Generate TikZ</>}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
     </div>
   );
 }

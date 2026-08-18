@@ -1,160 +1,116 @@
 # TikZ Generator
 
-A professional web application for creating LaTeX TikZ and CircuiTikZ diagrams. Draw diagrams on a canvas and instantly convert them to clean, compile-ready TikZ code. Diagram and function-plot generation is local and deterministic; upload an image and the server converts it to TikZ via a Gemini / OpenAI-compatible model.
+A web application for creating LaTeX TikZ and CircuiTikZ diagrams. Draw on a canvas
+and get clean, compile-ready TikZ code.
+
+Everything runs in the browser. Code generation is **local and deterministic** — the
+TikZ is derived from the relative positions of the elements on the canvas, so it is
+instant, works offline, and always round-trips to exactly what you drew. Previews
+compile in-browser via TikZJax (WebAssembly TeX). There is no backend, no model
+provider, no API key, and nothing to configure.
 
 ## Features
 
-- **Intuitive Drawing Canvas**: Freehand drawing with pen tool, shapes (rectangles, circles, triangles), and straight lines
-- **Circuit Elements**: Built-in resistor, capacitor, and inductor components for CircuiTikZ diagrams
-- **Mathematical Plots**: Sine wave generator with axis guidelines
-- **Style Controls**: 
-  - Adjustable line width and color
-  - Dashed line support
-  - Arrow heads for vectors
-  - Fill colors for shapes
-- **Apple Pencil Support**: Pressure-sensitive drawing on iPad with proper touch handling
-- **Advanced Features**:
-  - Undo/Redo with 30-level history
-  - Image import for tracing
-  - Session persistence (saves last generated code)
-  - Copy to clipboard
-  - Download as .tex file
-- **AI Image-to-TikZ**: Upload a screenshot or diagram and the server reproduces it as compile-ready TikZ (requires an API key)
-- **Live Preview**: Client-side LaTeX rendering via [TikZJax](https://github.com/drgrice1/tikzjax) (WebAssembly TeX) with zoom controls — works on any static host, including Vercel
+- **Drawing canvas** — freehand pen, lines, shapes (rectangle, rounded rectangle,
+  circle, ellipse, triangle), and 30+ placeable components
+- **Circuit elements** — resistor, capacitor, inductor, battery, diode, ground,
+  voltmeter, ammeter for CircuiTikZ diagrams
+- **Logic gates** — AND, OR, NOT, NAND, NOR, XOR
+- **Polygons** — parallelogram, rhombus, pentagon, hexagon, star
+- **Text and math** — plain labels or LaTeX formulas, rendered with real Computer
+  Modern in the preview
+- **Graph mode** — function plotting with configurable axes and ranges
+- **Style controls** — stroke colour, line width, dashed lines, arrowheads, fills,
+  rotation
+- **Apple Pencil** — pressure-sensitive strokes and palm rejection on iPad
+- **Editor** — 30-level undo/redo, grid and snap, zoom and pan, selection with a
+  properties panel, keyboard shortcuts
+- **Project files** — save/load as JSON, autosave to `localStorage` with
+  restore-on-reload
+- **Export** — copy TikZ to clipboard, download `.tex`, export the canvas as PNG
+- **Live preview** — client-side LaTeX rendering via
+  [TikZJax](https://github.com/drgrice1/tikzjax), with zoom
 
-## Tech Stack
+## Tech stack
 
-- **Framework**: Next.js 16 (App Router)
-- **AI Model**: Configurable Gemini / OpenAI-compatible model (only used for image-to-TikZ conversion)
-- **Styling**: Tailwind CSS 4
-- **Rendering**: TikZJax (WebAssembly TeX) in the browser, isolated in a hidden iframe; no server-side TeX required
+- **Framework** — Next.js 16 (App Router), React 19
+- **Styling** — Tailwind CSS 4
+- **Rendering** — TikZJax (WebAssembly TeX) in the browser, isolated in a hidden
+  iframe; no server-side TeX required
 
-## Getting Started
+## Getting started
 
 ### Prerequisites
 
-- Node.js 18+
-- An API key for image-to-TikZ conversion — Gemini (`GEMINI_API_KEY`) or any
-  OpenAI-compatible proxy. Diagram and graph generation work without a key.
-- No TeX distribution is needed: previews compile in the browser via TikZJax
-  (served from `public/tikzjax/` and `public/tj/preview-host.html`). The legacy
-  `pdflatex` render route (`/api/render-tikz`) is only useful when
-  self-hosting with a TeX distribution installed; the UI does not call it.
+Node.js 18+. That is the whole list — no TeX distribution, no API keys, no
+environment variables.
 
-### Installation
-
-1. Clone the repository:
-```bash
-git clone <your-repo-url>
-cd tikz-generator
-```
-
-2. Install dependencies:
 ```bash
 npm install
-```
-
-3. Set up environment variables:
-```bash
-cp .env.example .env.local
-```
-
-Edit `.env.local` and add your API key:
-```
-GEMINI_API_KEY=your_api_key_here
-
-# If using a proxy that bridges Anthropic, this key works too:
-# ANTHROPIC_API_KEY=your_api_key_here
-
-# Optional overrides for proxies / custom models:
-# GEMINI_AUTH_KEY=your_proxy_auth_key_here
-# GEMINI_BASE_URL=https://your-third-party-api.com/v1
-# GEMINI_MODEL=gemini-3.5-flash
-```
-
-4. Run the development server:
-```bash
 npm run dev
 ```
 
-5. Open [http://localhost:3000](http://localhost:3000) in your browser
+Open <http://localhost:3000>.
 
 ## Usage
 
-1. **Draw**: Use the tools in the left sidebar to draw your diagram on the canvas
-2. **Style**: Adjust colors, line width, and modifiers (dashed, arrows, fill)
-3. **Generate**: Click "View Code" to convert your drawing to LaTeX code
-4. **Preview**: View the rendered result in the Code tab
-5. **Export**: Copy to clipboard or download as a .tex file
+1. **Draw** — pick a tool from the toolbar and draw on the canvas
+2. **Style** — select an element and edit it in the properties panel
+3. **Generate** — the code panel updates live as you draw; **View Code** opens it
+4. **Preview** — switch to the Preview tab and press **Render**
+5. **Export** — copy to clipboard, download `.tex`, or export a PNG
 
 ### Apple Pencil / iPad
 
-The app fully supports Apple Pencil with:
-- Pressure sensitivity (thicker strokes with more pressure)
-- Palm rejection via pointer events
-- Optimized viewport for full-screen drawing
+Pressure sensitivity, palm rejection via pointer events, and a viewport tuned for
+full-screen drawing. Open the app in Safari on iPad and draw.
 
-Simply open the app in Safari on your iPad and start drawing with the Apple Pencil.
+> Pointer capture is deliberately deferred until a pen or touch pointer actually
+> moves. Capturing on every `pointerdown` triggers an iPadOS WebKit bug that leaves
+> capture stuck on the canvas and silently swallows every later tap on the toolbar.
 
-## Production Deployment
+## Deployment
 
-### Build
+The app is fully static — the production build emits only `/` and `/_not-found`,
+with no API routes — so it deploys anywhere.
 
 ```bash
 npm run build
 npm start
 ```
 
-### Environment Variables
+For Vercel: `vercel --prod`. No environment variables need to be set.
 
-Make sure to set `GEMINI_API_KEY` (or `GEMINI_AUTH_KEY` / `ANTHROPIC_API_KEY` for
-proxies) in your production environment. Live preview is client-side (TikZJax),
-so no server-side TeX is required on Vercel.
+## The TikZJax preview
 
-AI generation also supports these optional spend controls:
+The engine is vendored under `public/tikzjax/` (~15 MB, dominated by
+`core.dump.gz`) and version-pinned, with `Cache-Control: immutable` set in
+`next.config.mjs` so a returning browser never re-downloads it. Expect roughly 8 s
+on a first-ever visit and well under a second thereafter.
 
-| Variable | Default | Purpose |
-| --- | ---: | --- |
-| `AI_RATE_LIMIT_PER_HOUR` | `10` | AI calls allowed per source IP per hour |
-| `AI_RATE_LIMIT_PER_DAY` | `40` | AI calls allowed per source IP per day |
-| `AI_GLOBAL_LIMIT_PER_DAY` | `500` | AI calls allowed across the shared server per day |
-| `AI_MAX_TOKENS` | `4096` | Maximum output tokens per request (hard ceiling: `8192`) |
+Two implementation details are load-bearing:
 
-In production, these limits use the Upstash HTTP rate limiter. Configure
-`UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN` (or Vercel KV's
-`KV_REST_API_URL` and `KV_REST_API_TOKEN`); the paid route fails closed if the
-shared limiter is missing or unavailable. Local development falls back to an
-in-memory limiter. `AI_MONTHLY_LIMIT` is a hard ceiling on paid upstream
-attempts, including retries. Set it from the provider's monthly dollar budget
-and keep a matching hard billing limit and alert in the provider console.
+**The engine runs in a hidden iframe** (`public/tj/preview-host.html`). Injecting it
+directly into the React page made the TeX worker hang; a separate browsing context
+keeps the app's globals and re-renders away from the worker. The iframe posts the
+serialized SVG back via `postMessage`.
 
-Both API routes enforce input limits. Image generation accepts base64 image data
-URLs up to roughly 8 MB, element prompts are capped at 1 MB, and preview source
-is capped at 200,000 characters. The preview renderer rejects TeX file I/O,
-shell escapes, and user-supplied preamble commands.
-
-### Vercel Deployment
-
-This app is optimized for Vercel:
-
-```bash
-vercel --prod
-```
-
-Don't forget to add your `GEMINI_API_KEY` in the Vercel project settings.
+**`fonts.css` is linked from the root layout, not just the iframe.** The SVG that
+comes back positions every glyph as `<text font-family="cmr10">` and similar —
+Computer Modern faces that exist only as `@font-face` rules in
+`/tikzjax/fonts.css`. `@font-face` does not cross documents, so if the parent
+document lacks that stylesheet, shapes render correctly while every letter, digit
+and math symbol becomes a tofu box. The link stays absolute so the relative font
+URLs inside the stylesheet resolve against `/tikzjax/`.
 
 ## Architecture
 
-- `/app/page.js` - Main canvas component: drawing, editing, local deterministic TikZ generation, and graphing mode
-- `/app/api/generate-tikz/route.js` - API endpoint for AI image-to-TikZ conversion (OpenAI-compatible; Gemini or proxy)
-- `/app/api/render-tikz/route.js` - Compiles TikZ with pdflatex and converts the PDF to a PNG preview
-- `/lib/routeGuards.js` - Pure payload validation shared by the API routes and tests
-- `/lib/rateLimit.js` - In-process fixed-window request limiter
-- `/app/layout.js` - Root layout with metadata and viewport configuration
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
+- `app/page.js` — canvas, editing, local deterministic TikZ generation, graph mode,
+  and the preview host bridge
+- `app/layout.js` — root layout, metadata, viewport, and the TikZJax font stylesheet
+- `public/tj/preview-host.html` — isolated TikZJax host
+- `public/tikzjax/` — vendored WebAssembly TeX engine and Computer Modern fonts
+- `next.config.mjs` — immutable caching for the engine assets
 
 ## License
 
@@ -163,3 +119,4 @@ MIT
 ## Acknowledgments
 
 - Inspired by [tikzmaker.com](https://tikzmaker.com/)
+- Preview powered by [TikZJax](https://github.com/drgrice1/tikzjax)
