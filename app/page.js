@@ -2,7 +2,7 @@
 import { useRef, useState, useEffect, useMemo, useCallback } from "react";
 import { compileFn } from "@/lib/expr";
 import { generateTikzLocal, sx, sy } from "@/lib/tikz";
-import { BOX_KINDS, CIRC_KINDS, DEFAULT_GEOMETRY, LINE_KINDS, getElementBounds } from "@/lib/geometry";
+import { BOX_KINDS, CIRC_KINDS, DEFAULT_GEOMETRY, LINE_KINDS, getElementBounds, safeRange } from "@/lib/geometry";
 
 /* =========================================================================
  * SHAPE REGISTRY
@@ -119,17 +119,6 @@ const graphPadding = (cfg = {}) => ({
 });
 
 // Coerce a [min, max] pair into a strictly increasing, finite range.
-function safeRange(range, fallback) {
-  const [fa, fb] = fallback;
-  // Note Number("") === 0, so only actual numbers count as supplied.
-  const num = (v) => (typeof v === "number" && Number.isFinite(v) ? v : NaN);
-  let a = num(Array.isArray(range) ? range[0] : NaN);
-  let b = num(Array.isArray(range) ? range[1] : NaN);
-  if (!Number.isFinite(a)) a = fa;
-  if (!Number.isFinite(b)) b = fb;
-  if (b <= a) b = a + Math.max(1e-6, Math.abs(a) * 1e-6 || 1e-6);
-  return [a, b];
-}
 
 /* Tiny classnames join helper */
 const cx = (...xs) => xs.filter(Boolean).join(" ");

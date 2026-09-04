@@ -113,3 +113,74 @@ test('the same input always emits the same output', () => {
   const elements = [rect(), { type: 'circle', x: 200, y: 200, radius: 30, strokeColor: '#3355ff', lineWidth: 1 }];
   assert.equal(emit(elements), emit(elements));
 });
+
+test('a project name cannot break out of the header comment', () => {
+  // A .tikz.json file carries the project name. It went into the `%` header
+  // verbatim, so a newline ended the comment and everything after it became
+  // live TikZ in code the user copies out and compiles -- a shared project
+  // file could carry \immediate\write18{...} into someone else's LaTeX run.
+  const { code } = generateTikzLocal({
+    mode: 'diagram', canvasHeight: 400, elements: [rect()],
+    projectName: 'Innocent\n\\immediate\\write18{echo pwned}\n% ',
+  });
+  const header = code.split('\n').find((l) => l.startsWith('%'));
+  assert.ok(header.includes('write18'), 'the text may survive');
+  // ...but only inside the comment. Nothing may escape onto its own line.
+  for (const line of code.split('\n')) {
+    if (line.startsWith('%')) continue;
+    assert.doesNotMatch(line, /write18/, `escaped onto: ${line}`);
+  }
+});
+
+test('every separator a comment could end on is neutralised', () => {
+  for (const sep of ['\n', '\r', '\r\n', ' ', ' ']) {
+    const { code } = generateTikzLocal({
+      mode: 'diagram', canvasHeight: 400, elements: [rect()],
+      projectName: `A${sep}\\write18{x}`,
+    });
+    assert.equal(code.split('\n').filter((l) => l.includes('write18') && !l.startsWith('%')).length, 0);
+  }
+});
+
+test('an absurdly long project name cannot be smuggled through the header', () => {
+  const { code } = generateTikzLocal({
+    mode: 'diagram', canvasHeight: 400, elements: [rect()],
+    projectName: 'x'.repeat(100000),
+  });
+  assert.ok(code.split('\n')[0].length < 300);
+});
+
+test('a graph exports through safeRange without a missing helper', () => {
+  // lib/tikz.js reaches for safeRange in graph mode. It lived in page.js, so
+  // extracting the emitter left graph export throwing ReferenceError at the
+  // first line of the axis -- with no test, silently.
+  const { code } = generateTikzLocal({
+    mode: 'graph', canvasHeight: 400, elements: [], xRange: [-5, 5], yRange: [-5, 5],
+    graphConfig: {}, functions: [{ id: 'a', expr: 'sin(x)', color: '#2563eb', visible: true }],
+  });
+  assert.match(code, /\\begin\{axis\}/);
+  assert.match(code, /\\addplot/);
+});
+
+test('a broken function expression cannot break out of its skip comment', () => {
+  // The error path for an unparseable expression escaped for LaTeX but not for
+  // newlines -- and an expression containing one lands in exactly this path,
+  // because the tokenizer rejects it.
+  const { code } = generateTikzLocal({
+    mode: 'graph', canvasHeight: 400, elements: [], xRange: [-5, 5], yRange: [-5, 5],
+    graphConfig: {},
+    functions: [{ id: 'a', expr: 'x\n\\immediate\\write18{echo pwned}\n%', color: '#2563eb', visible: true }],
+  });
+  for (const line of code.split('\n')) {
+    if (line.trim().startsWith('%')) continue;
+    assert.doesNotMatch(line, /write18/, `escaped onto: ${line}`);
+  }
+});
+
+test('a bad range does not produce an invalid axis', () => {
+  const { code } = generateTikzLocal({
+    mode: 'graph', canvasHeight: 400, elements: [], xRange: [5, 5], yRange: [NaN, 'x'],
+    graphConfig: {}, functions: [],
+  });
+  assert.doesNotMatch(code, /NaN|undefined/);
+});
