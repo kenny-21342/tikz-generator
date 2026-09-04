@@ -22,7 +22,7 @@ They are not launch blockers.
 - ✅ Keyboard Shortcuts (Ctrl+Z, Ctrl+Y, Delete)
 - ✅ Color Presets (15 quick colors)
 - ✅ Export as PNG
-- ✅ AI-powered TikZ code generation (Claude Sonnet 4)
+- ✅ Deterministic TikZ code generation (local, no model call)
 - ✅ Live TikZ preview with TikZJax
 - ✅ Image import for tracing
 - ✅ Session persistence (localStorage)
@@ -261,7 +261,7 @@ Or let me know if you want something different!
 
 - Working app at: http://localhost:3000
 - 30+ drawing tools
-- AI code generation
+- Deterministic TikZ code generation
 - Keyboard shortcuts
 - Color presets
 - PNG export

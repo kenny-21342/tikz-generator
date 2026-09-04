@@ -1,5 +1,8 @@
 "use client";
 import { useRef, useState, useEffect, useMemo, useCallback } from "react";
+import { compileFn } from "@/lib/expr";
+import { generateTikzLocal, sx, sy } from "@/lib/tikz";
+import { BOX_KINDS, CIRC_KINDS, DEFAULT_GEOMETRY, LINE_KINDS, getElementBounds } from "@/lib/geometry";
 
 /* =========================================================================
  * SHAPE REGISTRY
@@ -89,41 +92,6 @@ const SHAPES = [
 
 const CATEGORIES = ["Basic", "Polygons", "Flowchart", "Circuit", "Logic Gates"];
 
-/* Default geometry when placing a shape via click-to-place. */
-const DEFAULT_GEOMETRY = {
-  rect: { width: 120, height: 80 },
-  "rounded-rect": { width: 120, height: 80, cornerRadius: 12 },
-  circle: { radius: 50 },
-  ellipse: { rx: 70, ry: 45 },
-  triangle: { width: 110, height: 95 },
-  line: { dx: 120, dy: 0 },
-  arrow: { dx: 120, dy: 0 },
-  text: { width: 100, height: 30 },
-  parallelogram: { width: 120, height: 70 },
-  rhombus: { width: 110, height: 80 },
-  pentagon: { width: 110, height: 100 },
-  hexagon: { width: 110, height: 95 },
-  star: { width: 110, height: 110, innerRatio: 0.42 },
-  process: { width: 120, height: 60 },
-  decision: { width: 120, height: 80 },
-  terminator: { width: 120, height: 50 },
-  document: { width: 130, height: 80 },
-  connector: { radius: 25 },
-  resistor: { dx: 120, dy: 0 },
-  capacitor: { dx: 80, dy: 0 },
-  inductor: { dx: 120, dy: 0 },
-  battery: { dx: 80, dy: 0 },
-  diode: { dx: 100, dy: 0 },
-  ground: {},
-  voltmeter: { radius: 30 },
-  ammeter: { radius: 30 },
-  "and-gate": { width: 80, height: 60 },
-  "or-gate": { width: 80, height: 60 },
-  "not-gate": { width: 80, height: 60 },
-  "nand-gate": { width: 90, height: 60 },
-  "nor-gate": { width: 90, height: 60 },
-  "xor-gate": { width: 90, height: 60 },
-};
 
 const CATEGORY_ICON = {
   Basic: "▦",
@@ -140,258 +108,6 @@ const COLOR_PRESETS = [
 ];
 
 const PLACEHOLDER_TOOL = "__place__";
-
-/* =========================================================================
- * SAFE MATH PARSER (tokenizer + shunting-yard + RPN eval)
- * Used by the Desmos-style graphing mode so users can type `sin(x) + 0.5*x^2`
- * without relying on eval(). Supports + - * / ^, parentheses, unary minus,
- * implicit multiplication (2x, 3sin(x)), and common functions / constants.
- * ========================================================================= */
-
-const MATH_FUNCS = {
-  sin: Math.sin, cos: Math.cos, tan: Math.tan,
-  asin: Math.asin, acos: Math.acos, atan: Math.atan,
-  sinh: Math.sinh, cosh: Math.cosh, tanh: Math.tanh,
-  sqrt: Math.sqrt, cbrt: Math.cbrt, abs: Math.abs,
-  exp: Math.exp, ln: Math.log, log: Math.log10, log10: Math.log10, log2: Math.log2,
-  floor: Math.floor, ceil: Math.ceil, round: Math.round,
-  sign: Math.sign,
-};
-const MATH_CONSTS = { pi: Math.PI, e: Math.E, tau: Math.PI * 2 };
-
-function tokenizeExpr(expr) {
-  const tokens = [];
-  let i = 0;
-  const isDigit = (c) => /[0-9.]/.test(c);
-  const isAlpha = (c) => /[a-zA-Z]/.test(c);
-  while (i < expr.length) {
-    const c = expr[i];
-    if (c === " " || c === "\t") { i++; continue; }
-    if (isDigit(c)) {
-      let num = "";
-      while (i < expr.length && isDigit(expr[i])) num += expr[i++];
-      tokens.push({ t: "num", v: parseFloat(num) });
-      continue;
-    }
-    if (isAlpha(c)) {
-      let name = "";
-      while (i < expr.length && isAlpha(expr[i])) name += expr[i++];
-      tokens.push({ t: "name", v: name });
-      continue;
-    }
-    if ("+-*/^()".includes(c)) { tokens.push({ t: "op", v: c }); i++; continue; }
-    throw new Error(`Unexpected character '${c}'`);
-  }
-  return tokens;
-}
-
-const PREC = { "+": 1, "-": 1, "*": 2, "/": 2, "^": 3, u: 4 };
-const RIGHT = { "^": true, u: true };
-
-function toRPN(tokens) {
-  const out = [];
-  const ops = [];
-  let prev = null;
-  for (let i = 0; i < tokens.length; i++) {
-    const tk = tokens[i];
-    if (tk.t === "num" || tk.t === "name") {
-      // Function name directly followed by "(" => function-call operator.
-      // The argument is already evaluated when this operator is emitted.
-      const next = tokens[i + 1];
-      if (
-        tk.t === "name" &&
-        MATH_FUNCS[tk.v] &&
-        next &&
-        next.t === "op" &&
-        next.v === "("
-      ) {
-        ops.push({ t: "op", v: "f", fn: tk.v, prec: 5 });
-        prev = tk;
-        continue;
-      }
-      out.push(tk);
-    } else if (tk.t === "op") {
-      if (tk.v === "(") {
-        ops.push(tk);
-      } else if (tk.v === ")") {
-        while (ops.length && ops[ops.length - 1].v !== "(") out.push(ops.pop());
-        if (!ops.length) throw new Error("Mismatched parentheses");
-        ops.pop(); // pop "("
-      } else {
-        const isUnary =
-          tk.v === "-" && (prev === null || (prev.t === "op" && prev.v !== ")"));
-        // At the start of an expression (or right after "(") rewrite unary
-        // minus as 0 - expr so that -x^2 evaluates as -(x^2), matching the
-        // Desmos/Python convention. Elsewhere (x^-2, x*-2) keep the "u"
-        // operator so the negation binds to the immediate operand.
-        const leadingUnary =
-          isUnary && (prev === null || (prev.t === "op" && prev.v === "("));
-        if (leadingUnary) out.push({ t: "num", v: 0 });
-        const op = leadingUnary ? "-" : isUnary ? "u" : tk.v;
-        const prec = PREC[op];
-        while (ops.length) {
-          const top = ops[ops.length - 1];
-          if (top.v === "(") break;
-          const topPrec = top.prec !== undefined ? top.prec : PREC[top.v];
-          if (topPrec !== undefined && prec !== undefined) {
-            const shouldPop = RIGHT[op] ? prec < topPrec : prec <= topPrec;
-            if (shouldPop) {
-              out.push(ops.pop());
-              continue;
-            }
-          }
-          break;
-        }
-        ops.push({ t: "op", v: op, prec });
-      }
-    }
-    prev = tk;
-  }
-  while (ops.length) {
-    const o = ops.pop();
-    if (o.v === "(") throw new Error("Mismatched parentheses");
-    out.push(o);
-  }
-  return out;
-}
-
-function evalRPN(rpn, x) {
-  const st = [];
-  for (const tk of rpn) {
-    if (tk.t === "num") { st.push(tk.v); continue; }
-    if (tk.t === "name") {
-      if (tk.v === "x") { st.push(x); continue; }
-      if (MATH_CONSTS[tk.v] !== undefined) { st.push(MATH_CONSTS[tk.v]); continue; }
-      throw new Error(`Unknown identifier '${tk.v}'`);
-    }
-    if (tk.t === "op") {
-      if (tk.v === "f") {
-        const a = st.pop();
-        if (a === undefined) throw new Error("Invalid expression");
-        st.push(MATH_FUNCS[tk.fn](a));
-        continue;
-      }
-      if (tk.v === "u") {
-        const a = st.pop();
-        if (a === undefined) throw new Error("Invalid expression");
-        st.push(-a);
-        continue;
-      }
-      const b = st.pop();
-      const a = st.pop();
-      if (a === undefined || b === undefined) throw new Error("Invalid expression");
-      if (tk.v === "^") st.push(Math.pow(a, b));
-      else if (tk.v === "+") st.push(a + b);
-      else if (tk.v === "-") st.push(a - b);
-      else if (tk.v === "*") st.push(a * b);
-      else if (tk.v === "/") st.push(a / b);
-      else throw new Error(`Unknown operator '${tk.v}'`);
-    }
-  }
-  if (st.length !== 1 || typeof st[0] !== "number") throw new Error("Invalid expression");
-  return st[0];
-}
-
-// Tokenize, insert implicit multiplication, and convert to RPN.
-function parseExpr(expr) {
-  const tokens = tokenizeExpr(expr);
-  // implicit multiplication: number/name followed by name/(
-  const inserted = [];
-  for (let i = 0; i < tokens.length; i++) {
-    inserted.push(tokens[i]);
-    const cur = tokens[i];
-    const nxt = tokens[i + 1];
-    if (!nxt) continue;
-    const curEnd = cur.t === "num" || cur.t === "name" || (cur.t === "op" && cur.v === ")");
-    const nxtStart = nxt.t === "name" || (nxt.t === "op" && nxt.v === "(");
-    if (curEnd && nxtStart && !(cur.t === "name" && MATH_FUNCS[cur.v])) {
-      inserted.push({ t: "op", v: "*" });
-    }
-  }
-  return toRPN(inserted);
-}
-
-// Compile to a reusable JS function for the on-canvas preview.
-function compileFn(expr) {
-  const rpn = parseExpr(expr);
-  return (x) => {
-    try {
-      return evalRPN(rpn, x);
-    } catch {
-      return NaN;
-    }
-  };
-}
-
-/* -------------------------------------------------------------------------
- * pgfmath emitter.
- *
- * The canvas evaluates with JavaScript semantics; pgfplots does not. The two
- * disagree in ways that silently produce a *different curve* rather than an
- * error, most importantly: pgfmath's trig functions take DEGREES. This walks
- * the same RPN the canvas uses and re-emits fully-parenthesised pgfmath, so
- * the compiled plot matches the preview.
- * ------------------------------------------------------------------------- */
-const PGF_FUNCS = {
-  // Trig: pgfmath works in degrees, JS in radians.
-  sin: (a) => `sin(deg(${a}))`,
-  cos: (a) => `cos(deg(${a}))`,
-  tan: (a) => `tan(deg(${a}))`,
-  // ...and the inverses return degrees, so convert back.
-  asin: (a) => `rad(asin(${a}))`,
-  acos: (a) => `rad(acos(${a}))`,
-  atan: (a) => `rad(atan(${a}))`,
-  sinh: (a) => `sinh(${a})`,
-  cosh: (a) => `cosh(${a})`,
-  tanh: (a) => `tanh(${a})`,
-  sqrt: (a) => `sqrt(${a})`,
-  cbrt: (a) => `(${a})^(1/3)`,     // no cbrt in pgfmath
-  abs: (a) => `abs(${a})`,
-  exp: (a) => `exp(${a})`,
-  ln: (a) => `ln(${a})`,
-  log: (a) => `log10(${a})`,       // our `log` is base 10, pgfmath's is not
-  log10: (a) => `log10(${a})`,
-  log2: (a) => `(ln(${a})/ln(2))`,
-  floor: (a) => `floor(${a})`,
-  ceil: (a) => `ceil(${a})`,
-  round: (a) => `round(${a})`,
-  sign: (a) => `sign(${a})`,
-};
-const PGF_CONSTS = { pi: "pi", e: "e", tau: "(2*pi)" };
-
-function toPgfExpr(expr) {
-  const rpn = parseExpr(expr);
-  const st = [];
-  for (const tk of rpn) {
-    if (tk.t === "num") { st.push(String(tk.v)); continue; }
-    if (tk.t === "name") {
-      if (tk.v === "x") { st.push("x"); continue; }
-      if (PGF_CONSTS[tk.v]) { st.push(PGF_CONSTS[tk.v]); continue; }
-      throw new Error(`unknown identifier '${tk.v}'`);
-    }
-    if (tk.v === "f") {
-      const emit = PGF_FUNCS[tk.fn];
-      if (!emit) throw new Error(`'${tk.fn}' has no pgfplots equivalent`);
-      const a = st.pop();
-      if (a === undefined) throw new Error("invalid expression");
-      st.push(emit(a));
-      continue;
-    }
-    if (tk.v === "u") {
-      const a = st.pop();
-      if (a === undefined) throw new Error("invalid expression");
-      st.push(`(-(${a}))`);
-      continue;
-    }
-    const b = st.pop(), a = st.pop();
-    if (a === undefined || b === undefined) throw new Error("invalid expression");
-    // Parenthesise every binary node: the RPN already encodes precedence, so this
-    // is redundant but always correct, and pgfmath's precedence differs subtly.
-    st.push(`(${a}${tk.v}${b})`);
-  }
-  if (st.length !== 1) throw new Error("invalid expression");
-  return st[0];
-}
 
 // Plot-area padding, in canvas buffer pixels. Shared by the graph renderer and the
 // hover readout so the dashed marker always lands on the value it reports.
@@ -732,346 +448,6 @@ function buildProjectSnapshot({ name, elements, zoom, pan, showGrid, snapToGrid,
       graphConfig: graphConfig || {},
     },
   };
-}
-
-/* =========================================================================
- * DETERMINISTIC TIKZ CODE GENERATOR (no AI — pure coordinate mapping)
- * Converts element objects directly into compile-ready TikZ code.
- * ========================================================================= */
-
-// Canvas pixels → TikZ units (cm). 50px ≈ 1cm.
-const TIKZ_SCALE = 50;
-// Canvas pixels are 1/TIKZ_SCALE of a TikZ unit (cm). 1cm = 28.4527pt, so a font
-// measured in canvas pixels converts to points with this factor.
-const PT_PER_CANVAS_PX = 28.4527 / TIKZ_SCALE;
-const sx = (v) => (Number.isFinite(v) ? v / TIKZ_SCALE : 0).toFixed(2);
-// Y is flipped. `H` is the flip origin in canvas pixels — the bottom of the content
-// bounding box (see tikzFlipOrigin), NOT the live canvas height, so that the same
-// diagram emits the same coordinates regardless of window size.
-const sy = (y, H) => ((H - (Number.isFinite(y) ? y : 0)) / TIKZ_SCALE).toFixed(2);
-
-// Escape text that will be typeset by LaTeX in text mode. Without this, a label
-// containing % & _ # $ { } ~ ^ or a backslash is a hard compilation error.
-const TEX_ESCAPES = {
-  "\\": "\\textbackslash{}",
-  "~": "\\textasciitilde{}",
-  "^": "\\textasciicircum{}",
-  "#": "\\#", $: "\\$", "%": "\\%", "&": "\\&", _: "\\_", "{": "\\{", "}": "\\}",
-};
-function texEscape(value) {
-  return String(value ?? "").replace(/[\\~^#$%&_{}]/g, (ch) => TEX_ESCAPES[ch]);
-}
-
-function hexToRgb(hex) {
-  let h = String(hex || "").trim().replace(/^#/, "");
-  // Expand 3-digit shorthand (#f00 -> ff0000); anything unparseable falls back to black.
-  if (h.length === 3) h = h[0] + h[0] + h[1] + h[1] + h[2] + h[2];
-  if (!/^[0-9a-fA-F]{6}$/.test(h)) h = "000000";
-  return {
-    r: parseInt(h.slice(0, 2), 16),
-    g: parseInt(h.slice(2, 4), 16),
-    b: parseInt(h.slice(4, 6), 16),
-  };
-}
-function rgbTex(hex) {
-  const { r, g, b } = hexToRgb(hex);
-  return `{rgb,255:red,${r};green,${g};blue,${b}}`;
-}
-
-// Join TikZ option fragments, dropping empties so we never emit `[draw, , circle]`.
-const opts = (...parts) => parts.filter((p) => p != null && String(p).trim() !== "").join(", ");
-
-function styleStr(el) {
-  const parts = [];
-  if (el.lineWidth) parts.push(`line width=${(el.lineWidth * 0.4).toFixed(1)}pt`);
-  if (el.strokeColor) parts.push(`draw=${rgbTex(el.strokeColor)}`);
-  if (el.isDashed) parts.push("dashed");
-  if (el.fillColor && el.fillColor !== "transparent") {
-    parts.push(`fill=${rgbTex(el.fillColor)}`);
-    if (el.fillOpacity != null && el.fillOpacity < 1) parts.push(`fill opacity=${el.fillOpacity.toFixed(2)}, text opacity=1`);
-  }
-  return parts.join(", ");
-}
-
-function nodeOpts(el, H, extra = "") {
-  const geo = ["draw", "line width=" + ((el.lineWidth || 2) * 0.4).toFixed(1) + "pt"];
-  if (el.strokeColor) geo.push("draw=" + rgbTex(el.strokeColor));
-  if (el.isDashed) geo.push("dashed");
-  if (el.fillColor && el.fillColor !== "transparent") {
-    geo.push("fill=" + rgbTex(el.fillColor));
-    if (el.fillOpacity != null && el.fillOpacity < 1) geo.push("fill opacity=" + el.fillOpacity.toFixed(2));
-  }
-  if (el.rotation) geo.push(`rotate around={${el.rotation}:(${sx(el.x + (el.width || 0) / 2)},${sy(el.y + (el.height || 0) / 2, H)})}`);
-  if (extra) geo.push(extra);
-  return geo.join(", ");
-}
-
-function drawOpts(el, H) {
-  const parts = [];
-  if (el.lineWidth) parts.push(`line width=${(el.lineWidth * 0.4).toFixed(1)}pt`);
-  if (el.strokeColor) parts.push(`draw=${rgbTex(el.strokeColor)}`);
-  if (el.isDashed) parts.push("dashed");
-  if (el.fillColor && el.fillColor !== "transparent") {
-    parts.push(`fill=${rgbTex(el.fillColor)}`);
-    if (el.fillOpacity != null && el.fillOpacity < 1) parts.push(`fill opacity=${el.fillOpacity.toFixed(2)}`);
-  }
-  if (el.hasArrow) parts.push("-Stealth");
-  if (el.rotation) {
-    // Mirror the canvas rotation center for each element kind.
-    let cx, cy;
-    if (el.x1 !== undefined && el.x2 !== undefined) {
-      cx = (el.x1 + el.x2) / 2;
-      cy = (el.y1 + el.y2) / 2;
-    } else if (CIRC_KINDS.has(el.type) || el.type === "ellipse") {
-      cx = el.x;
-      cy = el.y;
-    } else if (el.type === "text") {
-      cx = el.x;
-      cy = el.y - (el.fontSize || 16) / 2;
-    } else if ((el.type === "pen" || el.type === "sine") && el.points?.length) {
-      const xs = el.points.map((p) => p.x);
-      const ys = el.points.map((p) => p.y);
-      cx = (Math.min(...xs) + Math.max(...xs)) / 2;
-      cy = (Math.min(...ys) + Math.max(...ys)) / 2;
-    } else {
-      cx = (el.x || 0) + (el.width || 0) / 2;
-      cy = (el.y || 0) + (el.height || 0) / 2;
-    }
-    parts.push(`rotate around={${el.rotation}:(${sx(cx)},${sy(cy, H || 800)})}`);
-  }
-  return parts.join(", ");
-}
-
-const SHAPE_TO_NODE = {
-  "rounded-rect": "rounded corners",
-  "process": "draw, rounded corners=2pt",
-  "decision": "diamond",
-  "terminator": "rounded corners=10pt",
-  "rhombus": "diamond",
-  "pentagon": "regular polygon, regular polygon sides=5",
-  "hexagon": "regular polygon, regular polygon sides=6",
-  "star": "star, star points=5",
-  "triangle": "regular polygon, regular polygon sides=3",
-  "parallelogram": "trapezium, trapezium left angle=70, trapezium right angle=110",
-  "document": "tape",
-};
-
-const GATE_TEX = {
-  "and-gate": "american and port",
-  "or-gate": "american or port",
-  "not-gate": "american not port",
-  "nand-gate": "american nand port",
-  "nor-gate": "american nor port",
-  "xor-gate": "american xor port",
-};
-
-function genElement(el, H) {
-  if (!el || !el.type) return "";
-  const t = el.type;
-
-  // TEXT
-  if (t === "text") {
-    // isLatex content is the user's own math source and is passed through, but braced
-    // so an unbalanced $ cannot swallow the rest of the picture.
-    const content = el.isLatex ? `{$${el.text ?? ""}$}` : texEscape(el.text || "Label");
-    const fam = el.fontFamily === "serif" || el.fontFamily === "Times New Roman" ? "\\rmfamily" :
-               el.fontFamily === "monospace" || el.fontFamily === "Courier New" ? "\\ttfamily" : "\\sffamily";
-    // Canvas px -> pt, so text scales with the same factor as the coordinates.
-    const fs = Math.max(4, (el.fontSize || 18) * PT_PER_CANVAS_PX);
-    const fsStr = fs.toFixed(1), skipStr = (fs * 1.2).toFixed(1);
-    return `  \\node[${opts(
-      "anchor=base west",
-      `font={${fam}\\fontsize{${fsStr}}{${skipStr}}\\selectfont}`,
-      `text=${rgbTex(el.strokeColor || "#000000")}`,
-      el.rotation ? `rotate=${el.rotation}` : "",
-    )}] at (${sx(el.x)},${sy(el.y, H)}) {${content}};`;
-  }
-
-  // CIRCLES
-  if (CIRC_KINDS.has(t) || t === "circle") {
-    const r = Number.isFinite(el.radius) ? el.radius : 25;
-    const meter = (letter) =>
-      `  \\draw (${sx(el.x)},${sy(el.y, H)}) node[${opts("draw", styleStr(el), "circle", `minimum size=${sx(r * 2)} cm`)}] {${letter}};`;
-    if (t === "voltmeter") return meter("V");
-    if (t === "ammeter") return meter("A");
-    if (t === "connector") return `  \\node[${opts("draw", styleStr(el), "circle", `minimum size=${sx(r * 2)} cm`)}] at (${sx(el.x)},${sy(el.y, H)}) {};`;
-    return `  \\draw[${drawOpts(el, H)}] (${sx(el.x)},${sy(el.y, H)}) circle (${sx(r)});`;
-  }
-
-  // ELLIPSE
-  if (t === "ellipse") {
-    return `  \\draw[${drawOpts(el, H)}] (${sx(el.x)},${sy(el.y, H)}) ellipse ({${sx(el.rx)}} and {${sx(el.ry)}});`;
-  }
-
-  // LINES & ARROWS
-  if (t === "line" || t === "arrow") {
-    const opt = drawOpts(el, H);
-    return `  \\draw[${opt}] (${sx(el.x1)},${sy(el.y1, H)}) -- (${sx(el.x2)},${sy(el.y2, H)});`;
-  }
-
-  // CIRCUIT COMPONENTS (CircuiTikZ)
-  const circMap = { resistor: "R", capacitor: "C", inductor: "L", battery: "battery", diode: "D" };
-  if (circMap[t]) {
-    return `  \\draw (${sx(el.x1)},${sy(el.y1, H)}) to[${opts(circMap[t], styleStr(el))}] (${sx(el.x2)},${sy(el.y2, H)});`;
-  }
-  if (t === "ground") {
-    return `  \\draw (${sx(el.x)},${sy(el.y, H)}) node[ground] {};`;
-  }
-
-  // LOGIC GATES (circuitikz node shapes — require \usepackage{circuitikz})
-  if (GATE_TEX[t]) {
-    const g = DEFAULT_GEOMETRY[t] || {};
-    const w = Number.isFinite(el.width) ? el.width : (g.width || 80);
-    const h = Number.isFinite(el.height) ? el.height : (g.height || 60);
-    return `  \\node[${opts(GATE_TEX[t], styleStr(el))}] at (${sx(el.x + w / 2)},${sy(el.y + h / 2, H)}) {};`;
-  }
-
-  // PEN STROKES → series of line segments
-  if (t === "pen" && el.points && el.points.length > 1) {
-    const hasPressure = !el.isDashed && el.points.some((point) => Number.isFinite(point.pressure));
-    if (hasPressure) {
-      return el.points.slice(1).map((point, index) => {
-        const previous = el.points[index];
-        const pressure = ((previous.pressure ?? 0.5) + (point.pressure ?? 0.5)) / 2;
-        const segment = {
-          ...el,
-          lineWidth: (el.lineWidth || 2) * (0.5 + pressure),
-        };
-        return `  \\draw[${drawOpts(segment, H)}] (${sx(previous.x)},${sy(previous.y, H)}) -- (${sx(point.x)},${sy(point.y, H)});`;
-      }).join("\n");
-    }
-    const opt = drawOpts(el, H);
-    const pts = el.points.map((p) => `(${sx(p.x)},${sy(p.y, H)})`).join(" -- ");
-    return `  \\draw[${opt}] ${pts};`;
-  }
-
-  // BOX-LIKE SHAPES → use \node with shape geometry
-  if (BOX_KINDS.has(t)) {
-    const g = DEFAULT_GEOMETRY[t] || {};
-    const w = Number.isFinite(el.width) ? el.width : (g.width || 100);
-    const h = Number.isFinite(el.height) ? el.height : (g.height || 70);
-    const bx = el.x + w / 2, by = el.y + h / 2;
-    const shapeOpt = SHAPE_TO_NODE[t];
-    if (shapeOpt) {
-      const isCornerType = t === "rounded-rect" || t === "terminator";
-      const opt = isCornerType
-        ? nodeOpts(el, H, `rounded corners`)
-        : opts(
-            "draw",
-            `line width=${((el.lineWidth || 2) * 0.4).toFixed(1)}pt`,
-            el.strokeColor ? `draw=${rgbTex(el.strokeColor)}` : "",
-            el.isDashed ? "dashed" : "",
-            el.fillColor && el.fillColor !== "transparent" ? `fill=${rgbTex(el.fillColor)}` : "",
-            shapeOpt,
-            `minimum width=${sx(w)} cm`,
-            `minimum height=${sx(h)} cm`,
-            el.rotation ? `rotate=${el.rotation}` : "",
-          );
-      return `  \\node[${opt}] at (${sx(bx)},${sy(by, H)}) {};`;
-    }
-    // plain rectangle
-    return `  \\draw[${drawOpts(el, H)}] (${sx(el.x)},${sy(el.y, H)}) rectangle (${sx(el.x + w)},${sy(el.y + h, H)});`;
-  }
-
-  return `  % unsupported: ${t}`;
-}
-
-// The Y-flip origin, in canvas pixels. Derived from the content bounding box rather
-// than the live canvas height so that resizing the window, toggling a panel, or opening
-// the output dock never changes the emitted coordinates.
-function tikzFlipOrigin(elements, fallback) {
-  let maxY = -Infinity;
-  for (const el of elements || []) {
-    try {
-      const b = getElementBounds(el, 0);
-      if (Number.isFinite(b.y) && Number.isFinite(b.height)) maxY = Math.max(maxY, b.y + b.height);
-    } catch { /* skip malformed element */ }
-  }
-  if (!Number.isFinite(maxY)) return fallback || 800;
-  // Round to a whole grid step so tiny sub-pixel drags don't churn every coordinate.
-  return Math.ceil(maxY / 20) * 20;
-}
-
-const CIRCUIT_TYPES = new Set([
-  "resistor", "capacitor", "inductor", "battery", "diode",
-  "ground", "voltmeter", "ammeter",
-]);
-
-function generateTikzLocal(state) {
-  const { mode, elements, functions, xRange, yRange, graphConfig, projectName, canvasHeight } = state;
-  const H = mode === "graph" ? (canvasHeight || 800) : tikzFlipOrigin(elements, canvasHeight);
-  const lines = [];
-  lines.push(`% Auto-generated by TikZ Studio — ${projectName || "Untitled"}`);
-
-  // Determine which libraries are needed
-  const needs = { shapes: false, shapeSymbols: false, arrows: false, circuits: false, pgfplots: false };
-  if (mode === "graph") { needs.pgfplots = true; }
-  else {
-    for (const el of elements) {
-      // Logic gates use circuitikz node shapes, so they need the package too.
-      if (CIRCUIT_TYPES.has(el.type) || GATE_TEX[el.type]) needs.circuits = true;
-      if (["rounded-rect","decision","terminator","rhombus","pentagon","hexagon","star","triangle","parallelogram","process","document"].includes(el.type)) needs.shapes = true;
-      if (el.type === "document") needs.shapeSymbols = true; // `tape` lives in shapes.symbols
-      if (el.hasArrow || el.type === "arrow") needs.arrows = true;
-    }
-  }
-
-  lines.push("\\begin{tikzpicture}");
-  if (mode === "graph") {
-    const cfg = graphConfig || {};
-    const [xMin, xMax] = safeRange(xRange, [-10, 10]);
-    const [yMin, yMax] = safeRange(yRange, [-6, 6]);
-    const gridOpt = { none: "", major: "grid=major", minor: "grid=minor", both: "grid=both" };
-    const ax = opts(
-      `xmin=${xMin}`, `xmax=${xMax}`, `ymin=${yMin}`, `ymax=${yMax}`,
-      cfg.xLabel ? `xlabel={${texEscape(cfg.xLabel)}}` : "",
-      cfg.yLabel ? `ylabel={${texEscape(cfg.yLabel)}}` : "",
-      cfg.title ? `title={${texEscape(cfg.title)}}` : "",
-      gridOpt[cfg.gridStyle] ?? "grid=both",
-      cfg.showMajorTicks === false ? "xtick=\\empty, ytick=\\empty" : "",
-      cfg.showMinorTicks ? "minor tick num=4" : "",
-      cfg.showLegend ? `legend pos=${cfg.legendPosition || "north east"}` : "",
-      cfg.showDataLabels ? "nodes near coords" : "",
-      "axis lines=middle", "samples=200",
-    );
-    lines.push(`\\begin{axis}[${ax}]`);
-    (functions || []).filter((f) => f.visible && (f.expr || "").trim()).forEach((f) => {
-      // The canvas evaluates expressions with JS semantics (radians, log = log10,
-      // implicit multiplication). pgfmath does not — translate before emitting.
-      let expr;
-      try {
-        expr = toPgfExpr(f.expr);
-      } catch (err) {
-        lines.push(`  % skipped ${texEscape(f.expr)} — ${texEscape(err.message)}`);
-        return;
-      }
-      lines.push(`  \\addplot[domain=${xMin}:${xMax}, color=${rgbTex(f.color)}, thick] {${expr}};`);
-      if (cfg.showLegend) {
-        // Legend text is typeset in text mode, so escape it rather than assuming math.
-        lines.push(`  \\addlegendentry{${texEscape(f.expr)}}`);
-      }
-    });
-    lines.push("\\end{axis}");
-  } else {
-    for (const el of elements) {
-      const code = genElement(el, H);
-      if (code) lines.push(code);
-    }
-  }
-  lines.push("\\end{tikzpicture}");
-
-  // Return ONLY the tikzpicture environment — \usepackage / \usetikzlibrary
-  // cannot appear inside \begin{document}. The render route and copy-paste
-  // users add their own preamble. We note requirements as comments only.
-  const reqs = [];
-  if (needs.pgfplots) reqs.push("pgfplots");
-  if (needs.circuits) reqs.push("circuitikz");
-  if (needs.shapes) reqs.push("shapes.geometric", "shapes.misc");
-  if (needs.shapeSymbols) reqs.push("shapes.symbols");
-  if (needs.arrows) reqs.push("arrows.meta");
-  const comment = reqs.length ? `% Requires: ${reqs.join(", ")}\n` : "";
-
-  return { code: comment + lines.join("\n"), reqs };
 }
 
 /* =========================================================================
@@ -2159,6 +1535,15 @@ export default function TikzApp() {
       setError(`This diagram is too large to preview (over ${MAX_TIKZ_CHARS.toLocaleString()} characters of TikZ). You can still copy or download the code.`);
       return;
     }
+    // The in-browser engine ships pgfplots and the tikz libraries but not
+    // circuitikz.sty, so circuit elements and logic gates can never preview
+    // here. Say that plainly: the generated code is correct and compiles in a
+    // real LaTeX build, and the old path let TeX fail into a generic "check
+    // the code for errors" toast that blamed the user for our limitation.
+    if (/^%\s*Requires:.*\bcircuitikz\b/m.test(tikzCode)) {
+      setError("Preview cannot draw circuit elements or logic gates \u2014 the in-browser LaTeX engine does not include the circuitikz package. The code is still correct: copy or download it and compile with \\usepackage{circuitikz}.");
+      return;
+    }
     setError(null);
     setRenderingPreview(true);
     setPreviewSvg(null);
@@ -2173,8 +1558,8 @@ export default function TikzApp() {
       progressTimer = setInterval(() => setPreviewProgress((p) => Math.min(p + 8, 90)), 250);
 
       // Strip the leading `% Requires:` comment and rebuild package / library
-      // lists the generator already computed. TikZJax ships pgfplots and the
-      // tikz libraries but not circuitikz.sty, so let TeX report that itself.
+      // lists the generator already computed. Diagrams needing circuitikz are
+      // turned away above, so everything reaching here is renderable.
       const body = tikzCode.replace(/^%\s*Requires:[^\n]*\n/, "").trim();
       const reqMatch = tikzCode.match(/^%\s*Requires:\s*(.+)$/m);
       const reqs = reqMatch ? reqMatch[1].split(/,\s*/) : [];
@@ -2182,7 +1567,6 @@ export default function TikzApp() {
       const libs = [];
       for (const r of reqs) {
         if (r === "pgfplots") packages.pgfplots = "";
-        else if (r === "circuitikz") packages.circuitikz = "";
         else libs.push(r);
       }
       const preamble = packages.pgfplots !== undefined ? "\n\\pgfplotsset{compat=1.18}\n" : "";
@@ -3008,14 +2392,7 @@ export default function TikzApp() {
  * PURE HELPERS (outside component to avoid re-creation)
  * hit detection & bounds. Lifted from original, extended for new shape kinds.
  * ========================================================================= */
-const BOX_KINDS = new Set([
-  "rect", "rounded-rect", "parallelogram", "process", "terminator", "document",
-  "and-gate", "or-gate", "not-gate", "nand-gate", "nor-gate", "xor-gate",
-  "rhombus", "pentagon", "hexagon", "star", "triangle", "decision",
-]);
-const CIRC_KINDS = new Set(["circle", "voltmeter", "ammeter", "connector"]);
 const POLY_KINDS = new Set(["rhombus", "pentagon", "hexagon", "star", "triangle", "decision"]);
-const LINE_KINDS = new Set(["line", "arrow", "resistor", "capacitor", "inductor", "battery", "diode"]);
 
 function isPointInElement(x, y, el, tol = 6) {
   // Inverse-rotate the test point into the element's local (unrotated) frame
@@ -3073,40 +2450,6 @@ function isPointInElement(x, y, el, tol = 6) {
   return false;
 }
 
-function getElementBounds(el, pad = 6) {
-  if (BOX_KINDS.has(el.type)) {
-    return { x: el.x - pad, y: el.y - pad, width: (el.width || 0) + 2 * pad, height: (el.height || 0) + 2 * pad };
-  }
-  if (el.type === "text") {
-    const w = (el.text?.length || 1) * (el.fontSize || 16) * 0.6;
-    const h = el.fontSize || 16;
-    return { x: el.x - pad, y: el.y - h - pad, width: w + 2 * pad, height: h + 2 * pad };
-  }
-  if (CIRC_KINDS.has(el.type)) {
-    const r = el.radius || 0;
-    return { x: el.x - r - pad, y: el.y - r - pad, width: r * 2 + 2 * pad, height: r * 2 + 2 * pad };
-  }
-  if (el.type === "ellipse") {
-    return { x: el.x - el.rx - pad, y: el.y - el.ry - pad, width: el.rx * 2 + 2 * pad, height: el.ry * 2 + 2 * pad };
-  }
-  if (LINE_KINDS.has(el.type)) {
-    const minX = Math.min(el.x1, el.x2), maxX = Math.max(el.x1, el.x2);
-    const minY = Math.min(el.y1, el.y2), maxY = Math.max(el.y1, el.y2);
-    return { x: minX - pad - 20, y: minY - pad - 20, width: maxX - minX + 2 * pad + 40, height: maxY - minY + 2 * pad + 40 };
-  }
-  if (el.type === "pen" || el.type === "sine") {
-    if (!el.points?.length) return { x: el.x || 0, y: el.y || 0, width: 10, height: 10 };
-    const xs = el.points.map((p) => p.x), ys = el.points.map((p) => p.y);
-    return { x: Math.min(...xs) - pad, y: Math.min(...ys) - pad, width: Math.max(...xs) - Math.min(...xs) + 2 * pad, height: Math.max(...ys) - Math.min(...ys) + 2 * pad };
-  }
-  if (el.type === "ground") {
-    return { x: el.x - 20 - pad, y: el.y - pad, width: 40 + 2 * pad, height: 35 + 2 * pad };
-  }
-  if (el.type === "graph") {
-    return { x: el.x - pad, y: el.y - pad - 30, width: (el.width || 0) + 2 * pad, height: (el.height || 0) + 2 * pad + 50 };
-  }
-  return { x: el.x || 0, y: el.y || 0, width: 50, height: 50 };
-}
 
 /* =========================================================================
  * CANVAS DRAWING PRIMITIVES
