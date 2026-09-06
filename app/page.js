@@ -2,7 +2,7 @@
 import { useRef, useState, useEffect, useMemo, useCallback } from "react";
 import { compileFn } from "@/lib/expr";
 import { generateTikzLocal, sx, sy } from "@/lib/tikz";
-import { BOX_KINDS, CIRC_KINDS, DEFAULT_GEOMETRY, LINE_KINDS, getElementBounds, safeRange } from "@/lib/geometry";
+import { BOX_KINDS, CIRC_KINDS, DEFAULT_GEOMETRY, LINE_KINDS, elementCenter, getElementBounds, isPointInElement, safeRange } from "@/lib/geometry";
 
 /* =========================================================================
  * SHAPE REGISTRY
@@ -2383,61 +2383,6 @@ export default function TikzApp() {
  * ========================================================================= */
 const POLY_KINDS = new Set(["rhombus", "pentagon", "hexagon", "star", "triangle", "decision"]);
 
-function isPointInElement(x, y, el, tol = 6) {
-  // Inverse-rotate the test point into the element's local (unrotated) frame
-  if (el.rotation) {
-    let cx, cy;
-    if (LINE_KINDS.has(el.type)) { cx = (el.x1 + el.x2) / 2; cy = (el.y1 + el.y2) / 2; }
-    else if (CIRC_KINDS.has(el.type) || el.type === "ellipse") { cx = el.x; cy = el.y; }
-    else if (el.type === "text") { cx = el.x; cy = el.y - (el.fontSize || 16) / 2; }
-    else if ((el.type === "pen" || el.type === "sine") && el.points?.length) {
-      const b = getElementBounds(el, 0); cx = b.x + b.width / 2; cy = b.y + b.height / 2;
-    }
-    else { cx = (el.x || 0) + (el.width || 0) / 2; cy = (el.y || 0) + (el.height || 0) / 2; }
-    const rad = (-el.rotation * Math.PI) / 180;
-    const cos = Math.cos(rad), sin = Math.sin(rad);
-    const rx = cx + (x - cx) * cos - (y - cy) * sin;
-    const ry = cy + (x - cx) * sin + (y - cy) * cos;
-    x = rx; y = ry;
-  }
-
-  if (BOX_KINDS.has(el.type)) {
-    return x >= el.x - tol && x <= el.x + (el.width || 0) + tol &&
-           y >= el.y - tol && y <= el.y + (el.height || 0) + tol;
-  }
-  if (CIRC_KINDS.has(el.type)) {
-    return Math.hypot(x - el.x, y - el.y) <= (el.radius || 0) + tol;
-  }
-  if (el.type === "ellipse") {
-    const dx = (x - el.x) / (el.rx || 1);
-    const dy = (y - el.y) / (el.ry || 1);
-    return Math.hypot(dx, dy) <= 1 + tol / Math.max(el.rx || 1, el.ry || 1);
-  }
-  if (LINE_KINDS.has(el.type)) {
-    const lx = el.x2 - el.x1, ly = el.y2 - el.y1;
-    const len = Math.hypot(lx, ly);
-    if (len === 0) return Math.hypot(x - el.x1, y - el.y1) <= tol;
-    const t = Math.max(0, Math.min(1, ((x - el.x1) * lx + (y - el.y1) * ly) / (len * len)));
-    return Math.hypot(x - (el.x1 + t * lx), y - (el.y1 + t * ly)) <= tol + (el.lineWidth || 2) / 2;
-  }
-  if (el.type === "pen" || el.type === "sine") {
-    if (!el.points || !el.points.length) return false;
-    return el.points.some((p) => Math.hypot(x - p.x, y - p.y) <= tol + (el.lineWidth || 2));
-  }
-  if (el.type === "text") {
-    const w = (el.text?.length || 1) * (el.fontSize || 16) * 0.6;
-    const h = el.fontSize || 16;
-    return x >= el.x - tol && x <= el.x + w + tol && y >= el.y - h - tol && y <= el.y + tol;
-  }
-  if (el.type === "ground") {
-    return x >= el.x - 20 - tol && x <= el.x + 20 + tol && y >= el.y - tol && y <= el.y + 35 + tol;
-  }
-  if (el.type === "graph") {
-    return x >= el.x - tol && x <= el.x + (el.width || 0) + tol &&
-           y >= el.y - tol && y <= el.y + (el.height || 0) + tol;
-  }
-  return false;
-}
 
 
 /* =========================================================================
@@ -2446,23 +2391,11 @@ function isPointInElement(x, y, el, tol = 6) {
 function drawElement(ctx, el) {
   ctx.save();
 
-  // Rotation around the element center (if any)
+  // Rotation around the element center (if any). elementCenter() is shared with
+  // the hit test on purpose: if the renderer and isPointInElement disagree about
+  // the centre, a rotated shape is drawn in one place and clicked in another.
   if (el.rotation) {
-    let cx, cy;
-    if (LINE_KINDS.has(el.type)) {
-      cx = (el.x1 + el.x2) / 2; cy = (el.y1 + el.y2) / 2;
-    } else if (CIRC_KINDS.has(el.type)) {
-      cx = el.x; cy = el.y;
-    } else if (el.type === "ellipse") {
-      cx = el.x; cy = el.y;
-    } else if (el.type === "text") {
-      cx = el.x; cy = el.y - (el.fontSize || 16) / 2;
-    } else if ((el.type === "pen" || el.type === "sine") && el.points?.length) {
-      const b = getElementBounds(el, 0); cx = b.x + b.width / 2; cy = b.y + b.height / 2;
-    } else {
-      cx = (el.x || 0) + (el.width || 0) / 2;
-      cy = (el.y || 0) + (el.height || 0) / 2;
-    }
+    const { cx, cy } = elementCenter(el);
     ctx.translate(cx, cy);
     ctx.rotate((el.rotation * Math.PI) / 180);
     ctx.translate(-cx, -cy);
