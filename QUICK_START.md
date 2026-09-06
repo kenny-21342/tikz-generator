@@ -77,7 +77,7 @@ The development server is already running!
 - **Full Implementation Guide**: `SELECTION_SYSTEM_GUIDE.md`
 - **Implementation Plan**: `IMPLEMENTATION_PLAN.md`
 - **Component Library**: `COMPONENTS.md`
-- **Status & Options**: `STATUS.md`
+- **Current status**: `STATUS.md`
 
 ## 🆘 Troubleshooting
 

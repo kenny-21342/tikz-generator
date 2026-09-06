@@ -1,3 +1,7 @@
+> **Historical. Do not trust this file.** It describes AI generation, which was
+> removed entirely in `cb51b01`, and it predates the selection system actually
+> shipping. See `STATUS.md` for what is true, and `README.md` for the features.
+
 # TikZ Generator v3.0 - Implementation Complete! 🎉
 
 ## ✅ All Tasks Completed
@@ -106,7 +110,7 @@ The development server is already running and ready to use!
 2. **QUICK_START.md** - User quick start guide
 3. **IMPLEMENTATION_PLAN.md** - Original technical plan
 4. **COMPONENTS.md** - Drawing components reference
-5. **STATUS.md** - Project status and options
+5. **STATUS.md** - Current project status (the accurate one; this file is not)
 
 ## 🎯 Key Improvements Over v2.0
 

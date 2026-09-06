@@ -1,3 +1,7 @@
+> **Historical. Do not trust this file.** It describes AI generation, which was
+> removed entirely in `cb51b01`, and it predates the selection system actually
+> shipping. See `STATUS.md` for what is true, and `README.md` for the features.
+
 # TikZ Generator v3.0 - Selection System Implementation Guide
 
 ## ✅ What's Been Implemented
